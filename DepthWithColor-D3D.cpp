@@ -12,7 +12,6 @@
 PVOID _opt = NULL;
 #endif
 
-using namespace DirectX;
 
 
 // Global Variables
@@ -862,10 +861,11 @@ HRESULT CDepthWithColorD3D::InitDevice()
 	if (FAILED(hr))
 		return hr;
 
+	m_pImmediateContext->IASetInputLayout(m_pVertexLayout);
 
 
 	g_Box = GeometricPrimitive::CreateCube(m_pImmediateContext, 1.0f, false);
-	g_Sphere = GeometricPrimitive::CreateSphere(m_pImmediateContext, 0.5f);
+	g_Sphere = GeometricPrimitive::CreateSphere(m_pImmediateContext, 1.0f);
 
 	g_BatchEffect->SetProjection(m_projection);
     return S_OK;
@@ -1171,9 +1171,20 @@ HRESULT CDepthWithColorD3D::Render()
  //   //m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
 
  //   m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
+	g_BatchEffect->Apply(m_pImmediateContext);
+
+	//m_d3dContext->IASetInputLayout(.Get());
+
+	g_Batch->Begin();
+	VertexPositionColor v1(Vector3(-0.5f, -0.5f, 0.1), Colors::Yellow);
+	VertexPositionColor v2(Vector3(0.5f, -0.5f, 0.1f), Colors::Yellow);
+	VertexPositionColor v3(Vector3(0.5f, 0.5f, 0.1f), Colors::Yellow);
+	VertexPositionColor v4(Vector3(-0.5f, 0.5f, 0.1f), Colors::Yellow);
+	g_Batch->DrawQuad(v4,v3,v2,v1);
+	g_Batch->End();
 
  //   // Draw the scene
-	g_Sphere->Draw(XMMatrixIdentity(), m_camera.View, m_projection);
+	g_Sphere->Draw(XMMatrixIdentity(), m_camera.View, m_projection, Colors:: Red);
 
     // Present our back buffer to our front buffer
     m_pSwapChain->Present(0, 0);

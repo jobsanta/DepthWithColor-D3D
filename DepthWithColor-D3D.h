@@ -23,6 +23,8 @@
 #include <GeometricPrimitive.h>
 #include <VertexTypes.h>
 #include <CommonStates.h>
+#include <DirectXHelpers.h>
+#include <SimpleMath.h>
 
 // Kinect Library
 #include "NuiApi.h"
@@ -35,7 +37,9 @@
 /// <summary>
 /// Constant buffer for shader
 /// </summary>
-
+using namespace std;
+using namespace DirectX;
+using namespace DirectX::SimpleMath;
 
 struct CBChangesEveryFrame
 {
@@ -227,12 +231,12 @@ private:
 
 	HRESULT								ProcessSkeleton();
 
-	FT_VECTOR3D m_NeckPoint[NUI_SKELETON_COUNT];
-	FT_VECTOR3D m_HeadPoint[NUI_SKELETON_COUNT];
-	bool        m_SkeletonTracked[NUI_SKELETON_COUNT];
-	HRESULT     GetClosestHint(FT_VECTOR3D* pHint3D);
-	FT_VECTOR3D	m_hint3D[2];
-	float faceTranslation[3];
+	FT_VECTOR3D                         m_NeckPoint[NUI_SKELETON_COUNT];
+	FT_VECTOR3D                         m_HeadPoint[NUI_SKELETON_COUNT];
+	bool                                m_SkeletonTracked[NUI_SKELETON_COUNT];
+	HRESULT                             GetClosestHint(FT_VECTOR3D* pHint3D);
+	FT_VECTOR3D	                        m_hint3D[2];
+	float                               faceTranslation[3];
 
-	float ftRect[4];
+	float                               ftRect[4];
 };
