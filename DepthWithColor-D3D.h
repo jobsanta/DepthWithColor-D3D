@@ -6,21 +6,37 @@
 
 #pragma once
 
-#include <windows.h>
+#include "resource.h"
+#include <iostream>
+#include <windowsx.h>
+#include <algorithm>
 
-// This file requires the installation of the DirectX SDK, a link for which is included in the Toolkit Browser
-#include <d3d11.h>
+//-- DirecX Library
+#include <d3d11_1.h>
+#include <d3dcompiler.h>
 #include <DirectXMath.h>
+#include <DirectXColors.h>
 
+//---DirectxTK Library
+#include <Effects.h>
+#include <PrimitiveBatch.h>
+#include <GeometricPrimitive.h>
+#include <VertexTypes.h>
+#include <CommonStates.h>
+
+// Kinect Library
 #include "NuiApi.h"
+
+// Utilities Library
 #include "Camera.h"
 #include "DX11Utils.h"
-#include "resource.h"
 #include <FaceTrackLib.h>
 
 /// <summary>
 /// Constant buffer for shader
 /// </summary>
+
+
 struct CBChangesEveryFrame
 {
 	DirectX::XMMATRIX View;
@@ -97,7 +113,12 @@ private:
 	
 	ID3D11RenderTargetView*             m_pRenderTargetView;
 	ID3D11RenderTargetView*				m_pRenderTargetView_user;
+	
 
+	std::unique_ptr<BasicEffect>                         g_BatchEffect;
+	std::unique_ptr<GeometricPrimitive>                  g_Box;
+	std::unique_ptr<GeometricPrimitive>                  g_Sphere;
+	std::unique_ptr<PrimitiveBatch<VertexPositionColor>> g_Batch;
 
 
 	ID3D11Texture2D*                    m_pDepthStencil;
@@ -105,6 +126,8 @@ private:
 	ID3D11InputLayout*                  m_pVertexLayout;
 	ID3D11Buffer*                       m_pVertexBuffer;
 	ID3D11Buffer*                       m_pCBChangesEveryFrame;
+
+
 	DirectX::XMMATRIX                   m_projection;
 
 	ID3D11VertexShader*                 m_pVertexShader;

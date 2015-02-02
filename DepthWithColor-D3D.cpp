@@ -14,6 +14,7 @@ PVOID _opt = NULL;
 
 using namespace DirectX;
 
+
 // Global Variables
 CDepthWithColorD3D g_Application;  // Application class
 
@@ -103,9 +104,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 /// </summary>
 CDepthWithColorD3D::CDepthWithColorD3D()
 {
-
-
-    // get resolution as DWORDS, but store as LONGs to avoid casts later
+	   // get resolution as DWORDS, but store as LONGs to avoid casts later
     DWORD width = 0;
     DWORD height = 0;
 
@@ -517,40 +516,45 @@ HRESULT CDepthWithColorD3D::LoadShaders()
 {
     // Compile the geometry shader
     ID3D10Blob* pBlob = NULL;
-    HRESULT hr = CompileShaderFromFile(L"DepthWithColor-D3D.fx", "GS", "gs_4_0", &pBlob);
-    if ( FAILED(hr) ) { return hr; };
+	HRESULT hr;
+    //HRESULT hr = CompileShaderFromFile(L"DepthWithColor-D3D.fx", "GS", "gs_4_0", &pBlob);
+    //if ( FAILED(hr) ) { return hr; };
 
-    // Create the geometry shader
-    hr = m_pd3dDevice->CreateGeometryShader(pBlob->GetBufferPointer(), pBlob->GetBufferSize(), NULL, &m_pGeometryShader);
-    SAFE_RELEASE(pBlob);
-    if ( FAILED(hr) ) { return hr; }
+    //// Create the geometry shader
+    //hr = m_pd3dDevice->CreateGeometryShader(pBlob->GetBufferPointer(), pBlob->GetBufferSize(), NULL, &m_pGeometryShader);
+    //SAFE_RELEASE(pBlob);
+    //if ( FAILED(hr) ) { return hr; }
 
     // Compile the pixel shader
     hr = CompileShaderFromFile(L"DepthWithColor-D3D.fx", "PS", "ps_4_0", &pBlob);
-    if ( FAILED(hr) ) { return hr; }
+    if ( FAILED(hr) ) {
+		return hr; }
 
     // Create the pixel shader
     hr = m_pd3dDevice->CreatePixelShader(pBlob->GetBufferPointer(), pBlob->GetBufferSize(), NULL, &m_pPixelShader);
     SAFE_RELEASE(pBlob);
-    if ( FAILED(hr) ) { return hr; }
+    if ( FAILED(hr) ) { 
+		return hr; }
 
     // Compile the vertex shader
     hr = CompileShaderFromFile(L"DepthWithColor-D3D.fx", "VS", "vs_4_0", &pBlob);
-    if ( FAILED(hr) ) { return hr; }
+    if ( FAILED(hr) ) { 
+		return hr; }
 
     // Create the vertex shader
     hr = m_pd3dDevice->CreateVertexShader(pBlob->GetBufferPointer(), pBlob->GetBufferSize(), NULL, &m_pVertexShader);
     if ( SUCCEEDED(hr) )
     {
         // Define the vertex input layout
-        D3D11_INPUT_ELEMENT_DESC layout[] = { { "POSITION", 0, DXGI_FORMAT_R16_SINT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
+        D3D11_INPUT_ELEMENT_DESC layout[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
 
         // Create the vertex input layout
         hr = m_pd3dDevice->CreateInputLayout(layout, ARRAYSIZE(layout), pBlob->GetBufferPointer(), pBlob->GetBufferSize(), &m_pVertexLayout);
     }
 
     SAFE_RELEASE(pBlob);
-    if ( FAILED(hr) ) { return hr; }
+    if ( FAILED(hr) ) {
+		return hr; }
 
     // Set the input vertex layout
     // In this case we don't actually use it for anything
@@ -756,52 +760,54 @@ HRESULT CDepthWithColorD3D::InitDevice()
     vp.TopLeftY = 0;
     m_pImmediateContext->RSSetViewports(1, &vp);
 
-    hr = LoadShaders();
+    //hr = LoadShaders();
 
-    if ( FAILED(hr) )
-    {
-        MessageBox(NULL, L"Could not load shaders.", L"Error", MB_ICONHAND | MB_OK);
-        return hr;
-    }
+    //if ( FAILED(hr) )
+    //{
+    //    MessageBox(NULL, L"Could not load shaders.", L"Error", MB_ICONHAND | MB_OK);
+    //    return hr;
+    //}
 
-    // Create the vertex buffer
-    D3D11_BUFFER_DESC bd = {0};
-    bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(short);
-    bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    bd.CPUAccessFlags = 0;
 
-    hr = m_pd3dDevice->CreateBuffer(&bd, NULL, &m_pVertexBuffer);
-    if ( FAILED(hr) ) { return hr; }
 
-    // Set vertex buffer
-    UINT stride = 0;
-    UINT offset = 0;
-    m_pImmediateContext->IASetVertexBuffers(0, 1, &m_pVertexBuffer, &stride, &offset);
+    //// Create the vertex buffer
+    //D3D11_BUFFER_DESC bd = {0};
+    //bd.Usage = D3D11_USAGE_DEFAULT;
+    //bd.ByteWidth = sizeof(short);
+    //bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    //bd.CPUAccessFlags = 0;
 
-    // Set primitive topology
-    m_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
-    
-    // Create the constant buffers
-    bd.Usage = D3D11_USAGE_DEFAULT;
-    bd.ByteWidth = sizeof(CBChangesEveryFrame);
-    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    bd.CPUAccessFlags = 0;
-    hr = m_pd3dDevice->CreateBuffer(&bd, NULL, &m_pCBChangesEveryFrame);
-    if ( FAILED(hr) ) { return hr; }
+    //hr = m_pd3dDevice->CreateBuffer(&bd, NULL, &m_pVertexBuffer);
+    //if ( FAILED(hr) ) { return hr; }
 
-    // Create the sample state
-    D3D11_SAMPLER_DESC sampDesc;
-    ZeroMemory( &sampDesc, sizeof(sampDesc) );
-    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
-    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
-    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
-    sampDesc.MinLOD = 0;
-    sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
-    hr = m_pd3dDevice->CreateSamplerState( &sampDesc, &m_pColorSampler );
-    if ( FAILED(hr) ) { return hr; }
+    //// Set vertex buffer
+    //UINT stride = 0;
+    //UINT offset = 0;
+    //m_pImmediateContext->IASetVertexBuffers(0, 1, &m_pVertexBuffer, &stride, &offset);
+
+    //// Set primitive topology
+    //m_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
+    //
+    //// Create the constant buffers
+    //bd.Usage = D3D11_USAGE_DEFAULT;
+    //bd.ByteWidth = sizeof(CBChangesEveryFrame);
+    //bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    //bd.CPUAccessFlags = 0;
+    //hr = m_pd3dDevice->CreateBuffer(&bd, NULL, &m_pCBChangesEveryFrame);
+    //if ( FAILED(hr) ) { return hr; }
+
+    //// Create the sample state
+    //D3D11_SAMPLER_DESC sampDesc;
+    //ZeroMemory( &sampDesc, sizeof(sampDesc) );
+    //sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    //sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    //sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    //sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    //sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    //sampDesc.MinLOD = 0;
+    //sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    //hr = m_pd3dDevice->CreateSamplerState( &sampDesc, &m_pColorSampler );
+    //if ( FAILED(hr) ) { return hr; }
 
     // Initialize the projection matrix
     m_projection = XMMatrixPerspectiveFovLH(XM_PIDIV4, width / static_cast<FLOAT>(height), 0.1f, 100.f);
@@ -816,28 +822,52 @@ HRESULT CDepthWithColorD3D::InitDevice()
     const float DegreesToRadians = 3.14159265359f / 180.0f;
     m_xyScale = tanf(NUI_CAMERA_DEPTH_NOMINAL_HORIZONTAL_FOV * DegreesToRadians * 0.5f) / (m_depthWidth * 0.5f);    
 
-    // Set rasterizer state to disable backface culling
-    D3D11_RASTERIZER_DESC rasterDesc;
-    rasterDesc.FillMode = D3D11_FILL_SOLID;
-    rasterDesc.CullMode = D3D11_CULL_NONE;
-    rasterDesc.FrontCounterClockwise = true;
-    rasterDesc.DepthBias = false;
-    rasterDesc.DepthBiasClamp = 0;
-    rasterDesc.SlopeScaledDepthBias = 0;
-    rasterDesc.DepthClipEnable = true;
-    rasterDesc.ScissorEnable = false;
-    rasterDesc.MultisampleEnable = false;
-    rasterDesc.AntialiasedLineEnable = false;
-    
-    ID3D11RasterizerState* pState = NULL;
+    //// Set rasterizer state to disable backface culling
+    //D3D11_RASTERIZER_DESC rasterDesc;
+    //rasterDesc.FillMode = D3D11_FILL_SOLID;
+    //rasterDesc.CullMode = D3D11_CULL_NONE;
+    //rasterDesc.FrontCounterClockwise = true;
+    //rasterDesc.DepthBias = false;
+    //rasterDesc.DepthBiasClamp = 0;
+    //rasterDesc.SlopeScaledDepthBias = 0;
+    //rasterDesc.DepthClipEnable = true;
+    //rasterDesc.ScissorEnable = false;
+    //rasterDesc.MultisampleEnable = false;
+    //rasterDesc.AntialiasedLineEnable = false;
+    //
+    //ID3D11RasterizerState* pState = NULL;
 
-    hr = m_pd3dDevice->CreateRasterizerState(&rasterDesc, &pState);
-    if ( FAILED(hr) ) { return hr; }
+    //hr = m_pd3dDevice->CreateRasterizerState(&rasterDesc, &pState);
+    //if ( FAILED(hr) ) { return hr; }
 
-    m_pImmediateContext->RSSetState(pState);
+    //m_pImmediateContext->RSSetState(pState);
 
-    SAFE_RELEASE(pState);
+    //SAFE_RELEASE(pState);
 
+	g_Batch.reset(new PrimitiveBatch<VertexPositionColor>(m_pImmediateContext));
+
+	g_BatchEffect.reset(new BasicEffect(m_pd3dDevice));
+	g_BatchEffect->SetVertexColorEnabled(true);
+
+	void const* shaderByteCode;
+	size_t byteCodeLength;
+
+	g_BatchEffect->GetVertexShaderBytecode(&shaderByteCode, &byteCodeLength);
+
+
+	hr = m_pd3dDevice->CreateInputLayout(VertexPositionColor::InputElements,
+		VertexPositionColor::InputElementCount,
+		shaderByteCode, byteCodeLength,
+		&m_pVertexLayout);
+	if (FAILED(hr))
+		return hr;
+
+
+
+	g_Box = GeometricPrimitive::CreateCube(m_pImmediateContext, 1.0f, false);
+	g_Sphere = GeometricPrimitive::CreateSphere(m_pImmediateContext, 0.5f);
+
+	g_BatchEffect->SetProjection(m_projection);
     return S_OK;
 }
 
@@ -1109,9 +1139,7 @@ HRESULT CDepthWithColorD3D::Render()
 
     // Clear the depth buffer to 1.0 (max depth)
     m_pImmediateContext->ClearDepthStencilView(m_pDepthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
-
-
-
+	
 	D3D11_VIEWPORT vp;
 	vp.Width = static_cast<FLOAT>(m_windowResX );
 	vp.Height = static_cast<FLOAT>(m_windowResY);
@@ -1125,117 +1153,114 @@ HRESULT CDepthWithColorD3D::Render()
     // Update the view matrix
     m_camera.Update();
     
-    // Update variables that change once per frame
-    CBChangesEveryFrame cb;
-    cb.View = XMMatrixTranspose(m_camera.View);
-    cb.Projection = XMMatrixTranspose(m_projection);
-    cb.XYScale = XMFLOAT4(m_xyScale, -m_xyScale, 0.f, 0.f); 
-	cb.Rectangle = XMFLOAT4(ftRect[0], ftRect[1], ftRect[2], ftRect[3]);
-    m_pImmediateContext->UpdateSubresource(m_pCBChangesEveryFrame, 0, NULL, &cb, 0, 0);
+ //   // Update variables that change once per frame
+ //   CBChangesEveryFrame cb;
+ //   cb.View = XMMatrixTranspose(m_camera.View);
+ //   cb.Projection = XMMatrixTranspose(m_projection);
+ //   cb.XYScale = XMFLOAT4(m_xyScale, -m_xyScale, 0.f, 0.f); 
+	//cb.Rectangle = XMFLOAT4(ftRect[0], ftRect[1], ftRect[2], ftRect[3]);
+ //   m_pImmediateContext->UpdateSubresource(m_pCBChangesEveryFrame, 0, NULL, &cb, 0, 0);
 
-    // Set up shaders
-    m_pImmediateContext->VSSetShader(m_pVertexShader, NULL, 0);
+ //   // Set up shaders
+ //   m_pImmediateContext->VSSetShader(m_pVertexShader, NULL, 0);
 
-    m_pImmediateContext->GSSetShader(m_pGeometryShader, NULL, 0);
-    m_pImmediateContext->GSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
-    m_pImmediateContext->GSSetShaderResources(0, 1, &m_pDepthTextureRV);
-    m_pImmediateContext->GSSetShaderResources(1, 1, &m_pColorTextureRV);
-    m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
+ //   //m_pImmediateContext->GSSetShader(m_pGeometryShader, NULL, 0);
+ //   //m_pImmediateContext->GSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
+ //   //m_pImmediateContext->GSSetShaderResources(0, 1, &m_pDepthTextureRV);
+ //   //m_pImmediateContext->GSSetShaderResources(1, 1, &m_pColorTextureRV);
+ //   //m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
 
-    m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
+ //   m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
 
-    // Draw the scene
-    m_pImmediateContext->Draw(m_depthWidth * m_depthHeight, 0);
+ //   // Draw the scene
+	g_Sphere->Draw(XMMatrixIdentity(), m_camera.View, m_projection);
 
     // Present our back buffer to our front buffer
     m_pSwapChain->Present(0, 0);
 
 
 
+	//m_pImmediateContext->OMSetRenderTargets(1, &m_pRenderTargetView_user, m_pDepthStencilView);
+	//m_pImmediateContext->ClearRenderTargetView(m_pRenderTargetView_user, ClearColor);
+
+	//// Clear the depth buffer to 1.0 (max depth)
+	//m_pImmediateContext->ClearDepthStencilView(m_pDepthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
+
+	//vp.Width = static_cast<FLOAT>(m_windowResX/2);
+	//vp.Height = static_cast<FLOAT>(m_windowResY);
+	//vp.MinDepth = 0.0f;
+	//vp.MaxDepth = 1.0f;
+	//vp.TopLeftX = 0;
+	//vp.TopLeftY = 0;
+	//m_pImmediateContext->RSSetViewports(1, &vp);
 
 
+	//XMVECTOR m_eye = XMVectorSet(faceTranslation[0]-0.1,faceTranslation[1],faceTranslation[2]-0.1, 0.0f);
+	//XMVECTOR m_at = XMVectorSet(0.f, 0.f, -1.5f, 0.f);
+ //   XMVECTOR m_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+	//XMMATRIX user_view = XMMatrixLookAtLH(m_eye, m_at, m_up);
 
-	m_pImmediateContext->OMSetRenderTargets(1, &m_pRenderTargetView_user, m_pDepthStencilView);
-	m_pImmediateContext->ClearRenderTargetView(m_pRenderTargetView_user, ClearColor);
+	//// Update variables that change once per frame
+	////CBChangesEveryFrame cb;
+	//cb.View = XMMatrixTranspose(user_view);
+	////cb.Projection = XMMatrixTranspose(m_projection);
+	////cb.XYScale = XMFLOAT4(m_xyScale, -m_xyScale, 0.f, 0.f);
+	////cb.Rectangle = XMFLOAT4(ftRect[0], ftRect[1], ftRect[2], ftRect[3]);
+	//m_pImmediateContext->UpdateSubresource(m_pCBChangesEveryFrame, 0, NULL, &cb, 0, 0);
 
-	// Clear the depth buffer to 1.0 (max depth)
-	m_pImmediateContext->ClearDepthStencilView(m_pDepthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
+	//// Set up shaders
+	//m_pImmediateContext->VSSetShader(m_pVertexShader, NULL, 0);
 
-	vp.Width = static_cast<FLOAT>(m_windowResX/2);
-	vp.Height = static_cast<FLOAT>(m_windowResY);
-	vp.MinDepth = 0.0f;
-	vp.MaxDepth = 1.0f;
-	vp.TopLeftX = 0;
-	vp.TopLeftY = 0;
-	m_pImmediateContext->RSSetViewports(1, &vp);
+	//m_pImmediateContext->GSSetShader(m_pGeometryShader, NULL, 0);
+	//m_pImmediateContext->GSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
+	//m_pImmediateContext->GSSetShaderResources(0, 1, &m_pDepthTextureRV);
+	//m_pImmediateContext->GSSetShaderResources(1, 1, &m_pColorTextureRV);
+	//m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
 
+	//m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
 
-	XMVECTOR m_eye = XMVectorSet(faceTranslation[0]-0.1,faceTranslation[1],faceTranslation[2]-0.1, 0.0f);
-	XMVECTOR m_at = XMVectorSet(0.f, 0.f, -1.5f, 0.f);
-    XMVECTOR m_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-	XMMATRIX user_view = XMMatrixLookAtLH(m_eye, m_at, m_up);
-
-	// Update variables that change once per frame
-	//CBChangesEveryFrame cb;
-	cb.View = XMMatrixTranspose(user_view);
-	//cb.Projection = XMMatrixTranspose(m_projection);
-	//cb.XYScale = XMFLOAT4(m_xyScale, -m_xyScale, 0.f, 0.f);
-	//cb.Rectangle = XMFLOAT4(ftRect[0], ftRect[1], ftRect[2], ftRect[3]);
-	m_pImmediateContext->UpdateSubresource(m_pCBChangesEveryFrame, 0, NULL, &cb, 0, 0);
-
-	// Set up shaders
-	m_pImmediateContext->VSSetShader(m_pVertexShader, NULL, 0);
-
-	m_pImmediateContext->GSSetShader(m_pGeometryShader, NULL, 0);
-	m_pImmediateContext->GSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
-	m_pImmediateContext->GSSetShaderResources(0, 1, &m_pDepthTextureRV);
-	m_pImmediateContext->GSSetShaderResources(1, 1, &m_pColorTextureRV);
-	m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
-
-	m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
-
-	// Draw the scene
-	m_pImmediateContext->Draw(m_depthWidth * m_depthHeight, 0);
+	//// Draw the scene
+	//m_pImmediateContext->Draw(m_depthWidth * m_depthHeight, 0);
 
 
-	vp.Width = static_cast<FLOAT>(m_windowResX / 2);
-	vp.Height = static_cast<FLOAT>(m_windowResY);
-	vp.MinDepth = 0.0f;
-	vp.MaxDepth = 1.0f;
-	vp.TopLeftX = m_windowResX / 2;
-	vp.TopLeftY = 0;
-	m_pImmediateContext->RSSetViewports(1, &vp);
+	//vp.Width = static_cast<FLOAT>(m_windowResX / 2);
+	//vp.Height = static_cast<FLOAT>(m_windowResY);
+	//vp.MinDepth = 0.0f;
+	//vp.MaxDepth = 1.0f;
+	//vp.TopLeftX = m_windowResX / 2;
+	//vp.TopLeftY = 0;
+	//m_pImmediateContext->RSSetViewports(1, &vp);
 
-	m_eye = XMVectorSet(faceTranslation[0]+0.1, faceTranslation[1], faceTranslation[2] - 0.1, 0.0f);
-	m_at = XMVectorSet(0.f, 0.f, -1.5f, 0.f);
-	m_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-	user_view = XMMatrixLookAtLH(m_eye, m_at, m_up);
+	//m_eye = XMVectorSet(faceTranslation[0]+0.1, faceTranslation[1], faceTranslation[2] - 0.1, 0.0f);
+	//m_at = XMVectorSet(0.f, 0.f, -1.5f, 0.f);
+	//m_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
+	//user_view = XMMatrixLookAtLH(m_eye, m_at, m_up);
 
-	// Update variables that change once per frame
-	//CBChangesEveryFrame cb;
-	cb.View = XMMatrixTranspose(user_view);
-	//cb.Projection = XMMatrixTranspose(m_projection);
-	//cb.XYScale = XMFLOAT4(m_xyScale, -m_xyScale, 0.f, 0.f);
-	//cb.Rectangle = XMFLOAT4(ftRect[0], ftRect[1], ftRect[2], ftRect[3]);
-	m_pImmediateContext->UpdateSubresource(m_pCBChangesEveryFrame, 0, NULL, &cb, 0, 0);
+	//// Update variables that change once per frame
+	////CBChangesEveryFrame cb;
+	//cb.View = XMMatrixTranspose(user_view);
+	////cb.Projection = XMMatrixTranspose(m_projection);
+	////cb.XYScale = XMFLOAT4(m_xyScale, -m_xyScale, 0.f, 0.f);
+	////cb.Rectangle = XMFLOAT4(ftRect[0], ftRect[1], ftRect[2], ftRect[3]);
+	//m_pImmediateContext->UpdateSubresource(m_pCBChangesEveryFrame, 0, NULL, &cb, 0, 0);
 
-	// Set up shaders
-	m_pImmediateContext->VSSetShader(m_pVertexShader, NULL, 0);
+	//// Set up shaders
+	//m_pImmediateContext->VSSetShader(m_pVertexShader, NULL, 0);
 
-	m_pImmediateContext->GSSetShader(m_pGeometryShader, NULL, 0);
-	m_pImmediateContext->GSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
-	m_pImmediateContext->GSSetShaderResources(0, 1, &m_pDepthTextureRV);
-	m_pImmediateContext->GSSetShaderResources(1, 1, &m_pColorTextureRV);
-	m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
+	//m_pImmediateContext->GSSetShader(m_pGeometryShader, NULL, 0);
+	//m_pImmediateContext->GSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
+	//m_pImmediateContext->GSSetShaderResources(0, 1, &m_pDepthTextureRV);
+	//m_pImmediateContext->GSSetShaderResources(1, 1, &m_pColorTextureRV);
+	//m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
 
-	m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
+	//m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
 
-	// Draw the scene
-	m_pImmediateContext->Draw(m_depthWidth * m_depthHeight, 0);
+	//// Draw the scene
+	//m_pImmediateContext->Draw(m_depthWidth * m_depthHeight, 0);
 
 
-	// Present our back buffer to our front buffer
-	return m_pSwapChain_user->Present(0, 0);
+	//// Present our back buffer to our front buffer
+	//return m_pSwapChain_user->Present(0, 0);
 }
 
 // Get a video image and process it.
