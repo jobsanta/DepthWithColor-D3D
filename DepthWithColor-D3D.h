@@ -122,7 +122,7 @@ private:
 	std::unique_ptr<BasicEffect>                         g_BatchEffect;
 	std::unique_ptr<GeometricPrimitive>                  g_Box;
 	std::unique_ptr<GeometricPrimitive>                  g_Sphere;
-	std::unique_ptr<PrimitiveBatch<VertexPositionColor>> g_Batch;
+	std::unique_ptr<PrimitiveBatch<VertexPositionColorTexture>> g_Batch;
 
 
 	ID3D11Texture2D*                    m_pDepthStencil;
@@ -169,6 +169,8 @@ private:
 	// for passing color data as a texture
 	ID3D11Texture2D*                    m_pColorTexture2D;
 	ID3D11ShaderResourceView*           m_pColorTextureRV;
+
+
 	ID3D11SamplerState*                 m_pColorSampler;
 
 	// for mapping depth to color
@@ -225,6 +227,8 @@ private:
 	/// <returns>S_OK for success, or failure code</returns>
 	HRESULT                             LoadShaders();
 
+	void	                            RenderParticle();
+	
 	void								SetCenterOfImage(IFTResult*);
 
 	bool								CheckCameraInput();

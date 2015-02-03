@@ -843,10 +843,11 @@ HRESULT CDepthWithColorD3D::InitDevice()
 
     //SAFE_RELEASE(pState);
 
-	g_Batch.reset(new PrimitiveBatch<VertexPositionColor>(m_pImmediateContext));
+	g_Batch.reset(new PrimitiveBatch<VertexPositionColorTexture>(m_pImmediateContext));
 
 	g_BatchEffect.reset(new BasicEffect(m_pd3dDevice));
-	g_BatchEffect->SetVertexColorEnabled(true);
+	g_BatchEffect->SetVertexColorEnabled(true);	
+	g_BatchEffect->SetTextureEnabled(true);
 
 	void const* shaderByteCode;
 	size_t byteCodeLength;
@@ -854,8 +855,8 @@ HRESULT CDepthWithColorD3D::InitDevice()
 	g_BatchEffect->GetVertexShaderBytecode(&shaderByteCode, &byteCodeLength);
 
 
-	hr = m_pd3dDevice->CreateInputLayout(VertexPositionColor::InputElements,
-		VertexPositionColor::InputElementCount,
+	hr = m_pd3dDevice->CreateInputLayout(VertexPositionColorTexture::InputElements,
+		VertexPositionColorTexture::InputElementCount,
 		shaderByteCode, byteCodeLength,
 		&m_pVertexLayout);
 	if (FAILED(hr))
@@ -865,9 +866,11 @@ HRESULT CDepthWithColorD3D::InitDevice()
 
 
 	g_Box = GeometricPrimitive::CreateCube(m_pImmediateContext, 1.0f, false);
-	g_Sphere = GeometricPrimitive::CreateSphere(m_pImmediateContext, 1.0f);
+	g_Sphere = GeometricPrimitive::CreateSphere(m_pImmediateContext, 0.03f);
 
 	g_BatchEffect->SetProjection(m_projection);
+
+
     return S_OK;
 }
 
@@ -1017,6 +1020,7 @@ HRESULT CDepthWithColorD3D::GetClosestHint(FT_VECTOR3D* pHint3D)
 	return S_OK;
 }
 
+
 /// <summary>
 /// Process color data received from Kinect
 /// </summary>
@@ -1078,6 +1082,30 @@ HRESULT CDepthWithColorD3D::MapColorToDepth()
     return hr;
 }
 
+void CDepthWithColorD3D::RenderParticle()
+{
+	for (int x = 0; x < m_depthWidth; x += 15)
+	{
+		for (int y = 0; y < m_depthHeight; y+=15)
+		{
+			int depthIndex = x + y * m_depthWidth;
+			if ((m_depthD16[depthIndex] & 7) > 0)
+			{
+				float depth = (float)m_depthD16[depthIndex] / 8000.0f;
+				if (depth > 0.8)
+				{
+					XMMATRIX mat = XMMatrixTranslation( -1 + 2* (float)x / (float)m_depthWidth,
+						2*(-(float)y / (float)m_depthHeight)+1,
+						depth);
+					g_Sphere->Draw(mat, m_camera.View, m_projection, Colors::Red);
+				}
+			}
+			
+
+		}
+	}
+}
+
 /// <summary>
 /// Renders a frame
 /// </summary>
@@ -1123,7 +1151,9 @@ HRESULT CDepthWithColorD3D::Render()
     {
         needToMapColorToDepth = false;
     }
-	float ClearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+	float ClearColor[4] = { 0.0f, 0.0f, 0.5f, 1.0f };
+	float notColor[4] = { 0.0f, 0.5f, 0.0f, 1.0f };
+
     if (needToMapColorToDepth & gotHint)
     {
         MapColorToDepth();
@@ -1135,7 +1165,10 @@ HRESULT CDepthWithColorD3D::Render()
 
     // Clear the back buffer
 	m_pImmediateContext->OMSetRenderTargets(1, &m_pRenderTargetView, m_pDepthStencilView);
+	if (m_bDepthReceived)
     m_pImmediateContext->ClearRenderTargetView(m_pRenderTargetView, ClearColor);
+	else if (!m_bDepthReceived)
+		m_pImmediateContext->ClearRenderTargetView(m_pRenderTargetView, notColor);
 
     // Clear the depth buffer to 1.0 (max depth)
     m_pImmediateContext->ClearDepthStencilView(m_pDepthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
@@ -1171,21 +1204,23 @@ HRESULT CDepthWithColorD3D::Render()
  //   //m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
 
  //   m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
+
+	g_BatchEffect->SetView(m_camera.View);
+	g_BatchEffect->SetProjection(m_projection);
+	g_BatchEffect->SetTexture(m_pColorTextureRV);
 	g_BatchEffect->Apply(m_pImmediateContext);
+	m_pImmediateContext->IASetInputLayout(m_pVertexLayout);
 
-	//m_d3dContext->IASetInputLayout(.Get());
+	//g_Batch->Begin();
+	//VertexPositionColorTexture v1(Vector3(-1.0f, 1.0f, 0.f), Colors::White, Vector2(0.0f, 0.0f));
+	//VertexPositionColorTexture v2(Vector3(1.0f, 1.0f, 0.f), Colors::White, Vector2(1.0f, 0.0f));
+	//VertexPositionColorTexture v3(Vector3(1.0f, -1.0f, 0.f), Colors::White, Vector2(1.0f, 1.0f));
+	//VertexPositionColorTexture v4(Vector3(-1.0f, -1.0f, 0.0f), Colors::White, Vector2(0.0f, 1.0f));
+	//g_Batch->DrawQuad(v1, v2, v3, v4);
+	//g_Batch->End();
 
-	g_Batch->Begin();
-	VertexPositionColor v1(Vector3(-0.5f, -0.5f, 0.1), Colors::Yellow);
-	VertexPositionColor v2(Vector3(0.5f, -0.5f, 0.1f), Colors::Yellow);
-	VertexPositionColor v3(Vector3(0.5f, 0.5f, 0.1f), Colors::Yellow);
-	VertexPositionColor v4(Vector3(-0.5f, 0.5f, 0.1f), Colors::Yellow);
-	g_Batch->DrawQuad(v4,v3,v2,v1);
-	g_Batch->End();
-
- //   // Draw the scene
-	g_Sphere->Draw(XMMatrixIdentity(), m_camera.View, m_projection, Colors:: Red);
-
+	if (m_bDepthReceived)
+	RenderParticle();
     // Present our back buffer to our front buffer
     m_pSwapChain->Present(0, 0);
 
