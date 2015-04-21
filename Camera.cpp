@@ -89,8 +89,8 @@ void CCamera::Reset()
 
     View       = XMMatrixIdentity();
 
-    m_eye      = XMVectorSet(0.f, 0.f, -1.5f, 0.f);
-    m_at       = XMVectorSet(0.f, 0.f,  10.f, 0.f);
+    m_eye      = XMVectorSet(0.0f, 0.0f, -20.5f, 0.f);
+    m_at       = XMVectorSet(0.f, 0.f,  0.f, 0.f);
     m_up       = XMVectorSet(0.f, 1.f,   0.f, 0.f);
     m_forward  = XMVectorSet(0.f, 0.f,   1.f, 0.f);
     m_right    = XMVectorSet(1.f, 0.f,   0.f, 0.f);

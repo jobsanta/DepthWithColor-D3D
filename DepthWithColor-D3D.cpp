@@ -12,6 +12,31 @@
 PVOID _opt = NULL;
 #endif
 
+static const float c_FaceTextLayoutOffsetX = -0.1f;
+
+// face property text layout offset in Y axis
+static const float c_FaceTextLayoutOffsetY = -0.125f;
+
+// define the face frame features required to be computed by this application
+static const DWORD c_FaceFrameFeatures =
+FaceFrameFeatures::FaceFrameFeatures_BoundingBoxInColorSpace
+| FaceFrameFeatures::FaceFrameFeatures_PointsInColorSpace
+| FaceFrameFeatures::FaceFrameFeatures_RotationOrientation
+| FaceFrameFeatures::FaceFrameFeatures_Happy
+| FaceFrameFeatures::FaceFrameFeatures_RightEyeClosed
+| FaceFrameFeatures::FaceFrameFeatures_LeftEyeClosed
+| FaceFrameFeatures::FaceFrameFeatures_MouthOpen
+| FaceFrameFeatures::FaceFrameFeatures_MouthMoved
+| FaceFrameFeatures::FaceFrameFeatures_LookingAway
+| FaceFrameFeatures::FaceFrameFeatures_Glasses
+| FaceFrameFeatures::FaceFrameFeatures_FaceEngagement;
+
+
+PxPhysics*                CDepthWithColorD3D::gPhysicsSDK = NULL;
+PxDefaultErrorCallback    CDepthWithColorD3D::gDefaultErrorCallback;
+PxDefaultAllocator        CDepthWithColorD3D::gDefaultAllocatorCallback;
+PxSimulationFilterShader  CDepthWithColorD3D::gDefaultFilterShader = PxDefaultSimulationFilterShader;
+PxFoundation*             CDepthWithColorD3D::gFoundation = NULL;
 
 
 // Global Variables
@@ -41,6 +66,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLi
     {
         return 0;
     }
+
+	if (FAILED( g_Application.InitOpenCV()))
+	{
+		return 0;
+	}
+
+	g_Application.InitializePhysX();
+
 
     if ( FAILED( g_Application.CreateFirstConnected() ) )
     {
@@ -107,13 +140,16 @@ CDepthWithColorD3D::CDepthWithColorD3D()
     DWORD width = 0;
     DWORD height = 0;
 
-    NuiImageResolutionToSize(cDepthResolution, width, height);
-    m_depthWidth  = static_cast<LONG>(width);
-    m_depthHeight = static_cast<LONG>(height);
+	m_nStartTime = 0;
+	m_nLastCounter = 0;
+	m_nFramesSinceUpdate = 0;
+	m_fFreq = 0;
 
-    NuiImageResolutionToSize(cColorResolution, width, height);
-    m_colorWidth  = static_cast<LONG>(width);
-    m_colorHeight = static_cast<LONG>(height);
+    m_depthWidth  = static_cast<LONG>(cDepthWidth);
+    m_depthHeight = static_cast<LONG>(cDepthHeight);
+
+    m_colorWidth  = static_cast<LONG>(cColorWidth);
+    m_colorHeight = static_cast<LONG>(cColorHeight);
 
     m_colorToDepthDivisor = m_colorWidth/m_depthWidth;
 
@@ -150,31 +186,51 @@ CDepthWithColorD3D::CDepthWithColorD3D()
     m_bDepthReceived = false;
     m_bColorReceived = false;
 
-    m_hNextDepthFrameEvent = INVALID_HANDLE_VALUE;
-    m_pDepthStreamHandle = INVALID_HANDLE_VALUE;
-    m_hNextColorFrameEvent = INVALID_HANDLE_VALUE;
-    m_pColorStreamHandle = INVALID_HANDLE_VALUE;
-	m_hNextSkeletonEvent = INVALID_HANDLE_VALUE;
-	m_pSkeletonStreamhandle = INVALID_HANDLE_VALUE;
-
-
-
-    m_depthD16 = new USHORT[m_depthWidth*m_depthHeight];
-    m_colorCoordinates = new LONG[m_depthWidth*m_depthHeight*2];
-    m_colorRGBX = new BYTE[m_colorWidth*m_colorHeight*cBytesPerPixel];
-
-    m_bNearMode = false;
-
     m_bPaused = false;
+	m_pColorRGBX = NULL;
 
-	m_pFaceTracker = NULL;
-	m_pFTResult = NULL;
-	m_LastTrackSucceeded = false;
-	m_XCenterFace = 0;
-	m_YCenterFace = 0;
 
-	ftRect[0] = ftRect[1] = ftRect[2] = ftRect[3] = 0.0f;
-	faceTranslation[0] = faceTranslation[1] = faceTranslation[2] = -1.0f;
+	m_pCoordinateMapper = NULL;
+	m_pKinectSensor = NULL;
+	m_pColorFrameReader = NULL;
+	m_pBodyFrameReader = NULL;
+	m_pDepthCoordinates = NULL;
+
+	// create heap storage for composite image pixel data in RGBX format
+	m_pOutputRGBX = new RGBQUAD[cColorWidth * cColorHeight];
+
+	// create heap storage for background image pixel data in RGBX format
+	m_pBackgroundRGBX = new RGBQUAD[cColorWidth * cColorHeight];
+
+	// create heap storage for color pixel data in RGBX format
+	m_pColorRGBX = new RGBQUAD[cColorWidth * cColorHeight];
+
+
+	// create heap storage for the coorinate mapping from color to depth
+	m_pDepthCoordinates = new DepthSpacePoint[cColorWidth * cColorHeight];
+
+	const RGBQUAD c_green = { 255, 0, 0 };
+
+	// Fill in with a background colour of green if we can't load the background image
+	for (int i = 0; i < cColorWidth * cColorHeight; ++i)
+	{
+		m_pBackgroundRGBX[i] = c_green;
+	}
+
+	for (int i = 0; i < BODY_COUNT; i++)
+	{
+		m_pFaceFrameSources[i] = nullptr;
+		m_pFaceFrameReaders[i] = nullptr;
+	}
+
+	m_pBodyIndex = NULL;
+	m_depthD16 = NULL;
+
+	referenceFrame = Mat::zeros(1920, 1080, CV_8UC1);
+
+	proxyParticle.clear();
+
+	//namedWindow("reference");
 
 }
 
@@ -183,17 +239,34 @@ CDepthWithColorD3D::CDepthWithColorD3D()
 /// </summary>
 CDepthWithColorD3D::~CDepthWithColorD3D()
 {
-    if (NULL != m_pNuiSensor)
+    if (m_pKinectSensor)
     {
-        m_pNuiSensor->NuiShutdown();
-        m_pNuiSensor->Release();
+		m_pKinectSensor->Close();
+        
     }
+	SafeRelease(m_pKinectSensor);
+
+	destroyAllWindows();
 
     if (m_pImmediateContext) 
     {
         m_pImmediateContext->ClearState();
     }
-    
+
+	// done with face sources and readers
+	for (int i = 0; i < BODY_COUNT; i++)
+	{
+		SafeRelease(m_pFaceFrameSources[i]);
+		SafeRelease(m_pFaceFrameReaders[i]);
+	}
+
+	// done with body frame reader
+	SafeRelease(m_pBodyFrameReader);
+
+	// done with color frame reader
+	SafeRelease(m_pColorFrameReader);
+
+
     SAFE_RELEASE(m_pCBChangesEveryFrame);
     SAFE_RELEASE(m_pGeometryShader);
     SAFE_RELEASE(m_pPixelShader);
@@ -212,17 +285,36 @@ CDepthWithColorD3D::~CDepthWithColorD3D()
     SAFE_RELEASE(m_pImmediateContext);
     SAFE_RELEASE(m_pd3dDevice);
 
-	SAFE_RELEASE(m_pFaceTracker);
-	SAFE_RELEASE(m_pFTResult);
+	//SAFE_RELEASE(m_pFaceTracker);
+	//SAFE_RELEASE(m_pFTResult);
 
-    CloseHandle(m_hNextDepthFrameEvent);
-    CloseHandle(m_hNextColorFrameEvent);
-	CloseHandle(m_hNextSkeletonEvent);
+	if (m_pOutputRGBX)
+	{
+		delete[] m_pOutputRGBX;
+		m_pOutputRGBX = NULL;
+	}
 
-    // done with pixel data
-    delete[] m_colorRGBX;
+	if (m_pBackgroundRGBX)
+	{
+		delete[] m_pBackgroundRGBX;
+		m_pBackgroundRGBX = NULL;
+	}
+
+	if (m_pColorRGBX)
+	{
+		delete[] m_pColorRGBX;
+		m_pColorRGBX = NULL;
+	}
+
+	if (m_pDepthCoordinates)
+	{
+		delete[] m_pDepthCoordinates;
+		m_pDepthCoordinates = NULL;
+	}
     delete[] m_colorCoordinates;
     delete[] m_depthD16;
+
+	ShutdownPhysX();
 }
 
 /// <summary>
@@ -265,15 +357,15 @@ HRESULT CDepthWithColorD3D::InitWindow(HINSTANCE hInstance, int nCmdShow)
 	ShowWindow(m_hWnd, nCmdShow);
 
 
-	m_hWnd_user_view = CreateWindow(L"DepthWithColorD3DWindowClass", L"User View", WS_OVERLAPPEDWINDOW,
-		CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, NULL, NULL, hInstance,
-		NULL);
-	if (NULL == m_hWnd_user_view)
-	{
-		return E_FAIL;
-	}
+	//m_hWnd_user_view = CreateWindow(L"DepthWithColorD3DWindowClass", L"User View", WS_OVERLAPPEDWINDOW,
+	//	CW_USEDEFAULT, CW_USEDEFAULT, rc.right - rc.left, rc.bottom - rc.top, NULL, NULL, hInstance,
+	//	NULL);
+	//if (NULL == m_hWnd_user_view)
+	//{
+	//	return E_FAIL;
+	//}
 
-	ShowWindow(m_hWnd_user_view, nCmdShow);
+	//ShowWindow(m_hWnd_user_view, nCmdShow);
 
 
     return S_OK;
@@ -313,10 +405,6 @@ LRESULT CDepthWithColorD3D::HandleMessages(HWND hWnd, UINT uMsg, WPARAM wParam, 
         {
             int nKey = static_cast<int>(wParam);
 
-            if (nKey == 'N')
-            {
-                ToggleNearMode();
-            }
             break;
         }
     }
@@ -330,238 +418,81 @@ LRESULT CDepthWithColorD3D::HandleMessages(HWND hWnd, UINT uMsg, WPARAM wParam, 
 /// <returns>indicates success or failure</returns>
 HRESULT CDepthWithColorD3D::CreateFirstConnected()
 {
-    INuiSensor * pNuiSensor = NULL;
-    HRESULT hr;
-
-    int iSensorCount = 0;
-    hr = NuiGetSensorCount(&iSensorCount);
-    if (FAILED(hr) ) { return hr; }
-
-    // Look at each Kinect sensor
-    for (int i = 0; i < iSensorCount; ++i)
-    {
-        // Create the sensor so we can check status, if we can't create it, move on to the next
-        hr = NuiCreateSensorByIndex(i, &pNuiSensor);
-        if (FAILED(hr))
-        {
-            continue;
-        }
-
-        // Get the status of the sensor, and if connected, then we can initialize it
-        hr = pNuiSensor->NuiStatus();
-        if (S_OK == hr)
-        {
-            m_pNuiSensor = pNuiSensor;
-            break;
-        }
-
-        // This sensor wasn't OK, so release it since we're not using it
-        pNuiSensor->Release();
-    }
-
-    if (NULL == m_pNuiSensor)
-    {
-        return E_FAIL;
-    }
-
-    // Initialize the Kinect and specify that we'll be using depth and color
-    hr = m_pNuiSensor->NuiInitialize(NUI_INITIALIZE_FLAG_USES_COLOR | NUI_INITIALIZE_FLAG_USES_DEPTH_AND_PLAYER_INDEX | NUI_INITIALIZE_FLAG_USES_SKELETON); 
-    if (FAILED(hr) ) { return hr; }
-
-    // Create an event that will be signaled when depth data is available
-    m_hNextDepthFrameEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-    // Open a depth image stream to receive depth frames
-    hr = m_pNuiSensor->NuiImageStreamOpen(
-        NUI_IMAGE_TYPE_DEPTH_AND_PLAYER_INDEX,
-        cDepthResolution,
-        0,
-        2,
-        m_hNextDepthFrameEvent,
-        &m_pDepthStreamHandle);
-    if (FAILED(hr) ) { return hr; }
-
-    // Create an event that will be signaled when color data is available
-    m_hNextColorFrameEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-    // Open a color image stream to receive color frames
-    hr = m_pNuiSensor->NuiImageStreamOpen(
-        NUI_IMAGE_TYPE_COLOR,
-        cColorResolution,
-        0,
-        2,
-        m_hNextColorFrameEvent,
-        &m_pColorStreamHandle );
-    if (FAILED(hr) ) { return hr; }
-
-	m_hNextSkeletonEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
-	DWORD dwSkeletonFlags = NUI_SKELETON_TRACKING_FLAG_ENABLE_IN_NEAR_RANGE	| NUI_SKELETON_TRACKING_FLAG_ENABLE_SEATED_SUPPORT;
-	hr = m_pNuiSensor->NuiSkeletonTrackingEnable(m_hNextSkeletonEvent, dwSkeletonFlags);
-	if (FAILED(hr)) { return hr; }
-
-    // Start with near mode on
-    ToggleNearMode();
-
-	FT_CAMERA_CONFIG videoConfig;
-	FT_CAMERA_CONFIG depthConfig;
-	FT_CAMERA_CONFIG* pDepthConfig = NULL;
 
 
-	videoConfig.FocalLength = NUI_CAMERA_COLOR_NOMINAL_FOCAL_LENGTH_IN_PIXELS;
-	videoConfig.Height = m_colorHeight;
-	videoConfig.Width = m_colorWidth;
+	HRESULT hr;
 
-	depthConfig.FocalLength = NUI_CAMERA_DEPTH_NOMINAL_FOCAL_LENGTH_IN_PIXELS *2.0f;
-	depthConfig.Width = m_depthWidth;
-	depthConfig.Height = m_depthHeight; 
-	pDepthConfig = &depthConfig;
-
-	m_pFaceTracker = FTCreateFaceTracker(_opt);
-	if (!m_pFaceTracker)
-	{
-		MessageBoxW(m_hWnd, L"Could not create the face tracker.\n", L"Face Tracker Initialization Error\n", MB_OK);
-		return 2;
-	}
-	
-
-	hr = m_pFaceTracker->Initialize(&videoConfig, pDepthConfig, NULL, NULL);
+	hr = GetDefaultKinectSensor(&m_pKinectSensor);
 	if (FAILED(hr))
 	{
-		MessageBoxW(m_hWnd, L"Could initialized the face tracker.\n", L"Face Tracker Initialization Error\n", MB_OK);
-		return 2;
+		return hr;
 	}
 
-	hr = m_pFaceTracker->CreateFTResult(&m_pFTResult);
-	if (FAILED(hr) || !m_pFTResult)
+	if (m_pKinectSensor)
 	{
-		MessageBoxW(m_hWnd, L"Could not initialize the face tracker result.\n", L"Face Tracker Initialization Error\n", MB_OK);
-		return 4;
-	}
+		// Initialize the Kinect and get coordinate mapper and the frame reader
 
-	m_colorImage = FTCreateImage();
-	if (!m_colorImage || FAILED(hr = m_colorImage->Attach(m_colorWidth,m_colorHeight, m_colorRGBX, FTIMAGEFORMAT_UINT8_B8G8R8X8,m_colorWidth*4)))
-	{
-		return 5;
-	}
-
-	if (pDepthConfig)
-	{
-		m_depthImage = FTCreateImage();
-		if (!m_depthImage || FAILED(hr = m_depthImage->Attach(m_depthWidth,m_colorHeight,m_depthD16, FTIMAGEFORMAT_UINT16_D13P3, m_depthWidth)))
+		if (SUCCEEDED(hr))
 		{
-			return 6;
+			hr = m_pKinectSensor->get_CoordinateMapper(&m_pCoordinateMapper);
+		}
+
+		hr = m_pKinectSensor->Open();
+		
+		if (SUCCEEDED(hr))
+		{
+			hr = m_pKinectSensor->OpenMultiSourceFrameReader(
+				FrameSourceTypes::FrameSourceTypes_Depth  | 
+				FrameSourceTypes::FrameSourceTypes_Color | 
+				FrameSourceTypes::FrameSourceTypes_BodyIndex | 
+				FrameSourceTypes::FrameSourceTypes_Body,
+				&m_pMultiSourceFrameReader);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			// create a face frame source + reader to track each body in the fov
+			for (int i = 0; i < BODY_COUNT; i++)
+			{
+				if (SUCCEEDED(hr))
+				{
+					// create the face frame source by specifying the required face frame features
+					hr = CreateFaceFrameSource(m_pKinectSensor, 0, c_FaceFrameFeatures, &m_pFaceFrameSources[i]);
+				}
+				if (SUCCEEDED(hr))
+				{
+					// open the corresponding reader
+					hr = m_pFaceFrameSources[i]->OpenReader(&m_pFaceFrameReaders[i]);
+				}
+			}
 		}
 	}
 
-
-	SetCenterOfImage(NULL);
-	m_LastTrackSucceeded = false;
-
-	m_hint3D[0] = m_hint3D[1] = FT_VECTOR3D(0, 0, 0);
-
-    return hr;
-}
-
-void CDepthWithColorD3D::SetCenterOfImage(IFTResult* pResult)
-{
-	float centerX = ((float)m_colorWidth) / 2.0f;
-	float centerY = ((float)m_colorHeight) / 2.0f;
-	if (pResult)
+	if (!m_pKinectSensor || FAILED(hr))
 	{
-		if (SUCCEEDED(pResult->GetStatus()))
-		{
-			RECT faceRect;
-			pResult->GetFaceRect(&faceRect);
-			centerX = (faceRect.left + faceRect.right) / 2.0f;
-			centerY = (faceRect.top + faceRect.bottom) / 2.0f;
-		}
-		m_XCenterFace += 0.02f*(centerX - m_XCenterFace);
-		m_YCenterFace += 0.02f*(centerY - m_YCenterFace);
+		return E_FAIL;
 	}
-	else
-	{
-		m_XCenterFace = centerX;
-		m_YCenterFace = centerY;
-	}
+
+	return hr;
+
+
 }
 
-/// <summary>
-/// Toggles between near and default mode
-/// Does nothing on a non-Kinect for Windows device
-/// </summary>
-/// <returns>S_OK for success, or failure code</returns>
-HRESULT CDepthWithColorD3D::ToggleNearMode()
+
+HRESULT CDepthWithColorD3D::InitOpenCV()
 {
-    HRESULT hr = E_FAIL;
+	DWORD colorWidth, colorHeight;
+	colorHeight = cColorHeight;
+	colorWidth = cColorWidth;
 
-    if ( m_pNuiSensor )
-    {
-        hr = m_pNuiSensor->NuiImageStreamSetImageFrameFlags(m_pDepthStreamHandle, m_bNearMode ? 0 : NUI_IMAGE_STREAM_FLAG_ENABLE_NEAR_MODE);
+	Size size(colorWidth, colorHeight);
 
-        if ( SUCCEEDED(hr) )
-        {
-            m_bNearMode = !m_bNearMode;
-        }
-    }
 
-    return hr;
-}
+	namedWindow("flowfield");
+	//namedWindow("reference");
 
-/// <summary>
-/// Compile and set layout for shaders
-/// </summary>
-/// <returns>S_OK for success, or failure code</returns>
-HRESULT CDepthWithColorD3D::LoadShaders()
-{
-    // Compile the geometry shader
-    ID3D10Blob* pBlob = NULL;
-	HRESULT hr;
-    //HRESULT hr = CompileShaderFromFile(L"DepthWithColor-D3D.fx", "GS", "gs_4_0", &pBlob);
-    //if ( FAILED(hr) ) { return hr; };
-
-    //// Create the geometry shader
-    //hr = m_pd3dDevice->CreateGeometryShader(pBlob->GetBufferPointer(), pBlob->GetBufferSize(), NULL, &m_pGeometryShader);
-    //SAFE_RELEASE(pBlob);
-    //if ( FAILED(hr) ) { return hr; }
-
-    // Compile the pixel shader
-    hr = CompileShaderFromFile(L"DepthWithColor-D3D.fx", "PS", "ps_4_0", &pBlob);
-    if ( FAILED(hr) ) {
-		return hr; }
-
-    // Create the pixel shader
-    hr = m_pd3dDevice->CreatePixelShader(pBlob->GetBufferPointer(), pBlob->GetBufferSize(), NULL, &m_pPixelShader);
-    SAFE_RELEASE(pBlob);
-    if ( FAILED(hr) ) { 
-		return hr; }
-
-    // Compile the vertex shader
-    hr = CompileShaderFromFile(L"DepthWithColor-D3D.fx", "VS", "vs_4_0", &pBlob);
-    if ( FAILED(hr) ) { 
-		return hr; }
-
-    // Create the vertex shader
-    hr = m_pd3dDevice->CreateVertexShader(pBlob->GetBufferPointer(), pBlob->GetBufferSize(), NULL, &m_pVertexShader);
-    if ( SUCCEEDED(hr) )
-    {
-        // Define the vertex input layout
-        D3D11_INPUT_ELEMENT_DESC layout[] = { { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 } };
-
-        // Create the vertex input layout
-        hr = m_pd3dDevice->CreateInputLayout(layout, ARRAYSIZE(layout), pBlob->GetBufferPointer(), pBlob->GetBufferSize(), &m_pVertexLayout);
-    }
-
-    SAFE_RELEASE(pBlob);
-    if ( FAILED(hr) ) {
-		return hr; }
-
-    // Set the input vertex layout
-    // In this case we don't actually use it for anything
-    // All the work is done in the geometry shader, but we need something here
-    // We only need to set this once since we have only one vertex format
-    m_pImmediateContext->IASetInputLayout(m_pVertexLayout);
-
-    return hr;
+	cv::gpu::printShortCudaDeviceInfo(cv::gpu::getDevice());
+	return S_OK;
 }
 
 /// <summary>
@@ -646,23 +577,21 @@ HRESULT CDepthWithColorD3D::InitDevice()
 	if (FAILED(hr))
 		return hr;
 
-		// DirectX 11.0 systems
-		ZeroMemory(&sd, sizeof(sd));
-		sd.BufferCount = 1;
-		sd.BufferDesc.Width = width;
-		sd.BufferDesc.Height = height;
-		sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-		sd.BufferDesc.RefreshRate.Numerator = 60;
-		sd.BufferDesc.RefreshRate.Denominator = 1;
-		sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-		sd.OutputWindow = m_hWnd_user_view;
-		sd.SampleDesc.Count = 1;
-		sd.SampleDesc.Quality = 0;
-		sd.Windowed = TRUE;
+	// DirectX 11.0 systems
+	ZeroMemory(&sd, sizeof(sd));
+	sd.BufferCount = 1;
+	sd.BufferDesc.Width = width;
+	sd.BufferDesc.Height = height;
+	sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	sd.BufferDesc.RefreshRate.Numerator = 60;
+	sd.BufferDesc.RefreshRate.Denominator = 1;
+	sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	sd.OutputWindow = m_hWnd_user_view;
+	sd.SampleDesc.Count = 1;
+	sd.SampleDesc.Quality = 0;
+	sd.Windowed = TRUE;
 
-		hr = dxgiFactory->CreateSwapChain(m_pd3dDevice, &sd, &m_pSwapChain_user);
-	
-
+	hr = dxgiFactory->CreateSwapChain(m_pd3dDevice, &sd, &m_pSwapChain_user);
 
 
     // Create a render target view
@@ -673,13 +602,6 @@ HRESULT CDepthWithColorD3D::InitDevice()
     hr = m_pd3dDevice->CreateRenderTargetView(pBackBuffer, NULL, &m_pRenderTargetView);
     pBackBuffer->Release();
     if ( FAILED(hr) ) { return hr; }
-
-	hr = m_pSwapChain_user->GetBuffer(0, __uuidof(ID3D11Texture2D), (LPVOID*)&pBackBuffer);
-	if (FAILED(hr)) { return hr; }
-
-	hr = m_pd3dDevice->CreateRenderTargetView(pBackBuffer, NULL, &m_pRenderTargetView_user);
-	pBackBuffer->Release();
-	if (FAILED(hr)) { return hr; }
 
 
     // Create depth stencil texture
@@ -759,55 +681,6 @@ HRESULT CDepthWithColorD3D::InitDevice()
     vp.TopLeftY = 0;
     m_pImmediateContext->RSSetViewports(1, &vp);
 
-    //hr = LoadShaders();
-
-    //if ( FAILED(hr) )
-    //{
-    //    MessageBox(NULL, L"Could not load shaders.", L"Error", MB_ICONHAND | MB_OK);
-    //    return hr;
-    //}
-
-
-
-    //// Create the vertex buffer
-    //D3D11_BUFFER_DESC bd = {0};
-    //bd.Usage = D3D11_USAGE_DEFAULT;
-    //bd.ByteWidth = sizeof(short);
-    //bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    //bd.CPUAccessFlags = 0;
-
-    //hr = m_pd3dDevice->CreateBuffer(&bd, NULL, &m_pVertexBuffer);
-    //if ( FAILED(hr) ) { return hr; }
-
-    //// Set vertex buffer
-    //UINT stride = 0;
-    //UINT offset = 0;
-    //m_pImmediateContext->IASetVertexBuffers(0, 1, &m_pVertexBuffer, &stride, &offset);
-
-    //// Set primitive topology
-    //m_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_POINTLIST);
-    //
-    //// Create the constant buffers
-    //bd.Usage = D3D11_USAGE_DEFAULT;
-    //bd.ByteWidth = sizeof(CBChangesEveryFrame);
-    //bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    //bd.CPUAccessFlags = 0;
-    //hr = m_pd3dDevice->CreateBuffer(&bd, NULL, &m_pCBChangesEveryFrame);
-    //if ( FAILED(hr) ) { return hr; }
-
-    //// Create the sample state
-    //D3D11_SAMPLER_DESC sampDesc;
-    //ZeroMemory( &sampDesc, sizeof(sampDesc) );
-    //sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    //sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
-    //sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
-    //sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    //sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
-    //sampDesc.MinLOD = 0;
-    //sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
-    //hr = m_pd3dDevice->CreateSamplerState( &sampDesc, &m_pColorSampler );
-    //if ( FAILED(hr) ) { return hr; }
-
     // Initialize the projection matrix
     m_projection = XMMatrixPerspectiveFovLH(XM_PIDIV4, width / static_cast<FLOAT>(height), 0.1f, 100.f);
     
@@ -818,30 +691,30 @@ HRESULT CDepthWithColorD3D::InitDevice()
     // I.e. tan(horizontalFOV)/depthWidth == tan(verticalFOV)/depthHeight
     // Essentially we're computing the vector that light comes in on for a given pixel on the depth camera
     // We can then scale our x&y depth position by this and the depth to get how far along that vector we are
-    const float DegreesToRadians = 3.14159265359f / 180.0f;
-    m_xyScale = tanf(NUI_CAMERA_DEPTH_NOMINAL_HORIZONTAL_FOV * DegreesToRadians * 0.5f) / (m_depthWidth * 0.5f);    
+/*    const float DegreesToRadians = 3.14159265359f / 180.0f;
+    m_xyScale = tanf(NUI_CAMERA_DEPTH_NOMINAL_HORIZONTAL_FOV * DegreesToRadians * 0.5f) / (m_depthWidth * 0.5f);  */  
 
-    //// Set rasterizer state to disable backface culling
-    //D3D11_RASTERIZER_DESC rasterDesc;
-    //rasterDesc.FillMode = D3D11_FILL_SOLID;
-    //rasterDesc.CullMode = D3D11_CULL_NONE;
-    //rasterDesc.FrontCounterClockwise = true;
-    //rasterDesc.DepthBias = false;
-    //rasterDesc.DepthBiasClamp = 0;
-    //rasterDesc.SlopeScaledDepthBias = 0;
-    //rasterDesc.DepthClipEnable = true;
-    //rasterDesc.ScissorEnable = false;
-    //rasterDesc.MultisampleEnable = false;
-    //rasterDesc.AntialiasedLineEnable = false;
-    //
-    //ID3D11RasterizerState* pState = NULL;
+    // Set rasterizer state to disable backface culling
+    D3D11_RASTERIZER_DESC rasterDesc;
+    rasterDesc.FillMode = D3D11_FILL_SOLID;
+    rasterDesc.CullMode = D3D11_CULL_NONE;
+    rasterDesc.FrontCounterClockwise = true;
+    rasterDesc.DepthBias = false;
+    rasterDesc.DepthBiasClamp = 0;
+    rasterDesc.SlopeScaledDepthBias = 0;
+    rasterDesc.DepthClipEnable = true;
+    rasterDesc.ScissorEnable = false;
+    rasterDesc.MultisampleEnable = false;
+    rasterDesc.AntialiasedLineEnable = false;
+    
+    ID3D11RasterizerState* pState = NULL;
 
-    //hr = m_pd3dDevice->CreateRasterizerState(&rasterDesc, &pState);
-    //if ( FAILED(hr) ) { return hr; }
+    hr = m_pd3dDevice->CreateRasterizerState(&rasterDesc, &pState);
+    if ( FAILED(hr) ) { return hr; }
 
-    //m_pImmediateContext->RSSetState(pState);
+    m_pImmediateContext->RSSetState(pState);
 
-    //SAFE_RELEASE(pState);
+    SAFE_RELEASE(pState);
 
 	g_Batch.reset(new PrimitiveBatch<VertexPositionColorTexture>(m_pImmediateContext));
 
@@ -865,8 +738,8 @@ HRESULT CDepthWithColorD3D::InitDevice()
 	m_pImmediateContext->IASetInputLayout(m_pVertexLayout);
 
 
-	g_Box = GeometricPrimitive::CreateCube(m_pImmediateContext, 1.0f, false);
-	g_Sphere = GeometricPrimitive::CreateSphere(m_pImmediateContext, 0.03f);
+	g_Box = GeometricPrimitive::CreateCube(m_pImmediateContext, 2.0f, false);
+	g_Sphere = GeometricPrimitive::CreateSphere(m_pImmediateContext, 1.0f);
 
 	g_BatchEffect->SetProjection(m_projection);
 
@@ -875,235 +748,306 @@ HRESULT CDepthWithColorD3D::InitDevice()
 }
 
 /// <summary>
-/// Process depth data received from Kinect
-/// </summary>
-/// <returns>S_OK for success, or failure code</returns>
-HRESULT CDepthWithColorD3D::ProcessDepth()
-{
-    NUI_IMAGE_FRAME imageFrame;
-
-    HRESULT hr = m_pNuiSensor->NuiImageStreamGetNextFrame(m_pDepthStreamHandle, 0, &imageFrame);
-    if ( FAILED(hr) ) { return hr; }
-   
-    NUI_LOCKED_RECT LockedRect;
-    hr = imageFrame.pFrameTexture->LockRect(0, &LockedRect, NULL, 0);
-    if ( FAILED(hr) ) { return hr; }
-
-    memcpy(m_depthD16, LockedRect.pBits, LockedRect.size);
-    m_bDepthReceived = true;
-
-    hr = imageFrame.pFrameTexture->UnlockRect(0);
-    if ( FAILED(hr) ) { return hr; };
-
-    hr = m_pNuiSensor->NuiImageStreamReleaseFrame(m_pDepthStreamHandle, &imageFrame);
-
-    // copy to our d3d 11 depth texture
-    D3D11_MAPPED_SUBRESOURCE msT;
-    hr = m_pImmediateContext->Map(m_pDepthTexture2D, NULL, D3D11_MAP_WRITE_DISCARD, NULL, &msT);
-    if ( FAILED(hr) ) { return hr; }
-
-    memcpy(msT.pData, m_depthD16, LockedRect.size);    
-    m_pImmediateContext->Unmap(m_pDepthTexture2D, NULL);
-
-    return hr;
-}
-
-/// <summary>
 /// Process color data received from Kinect
 /// </summary>
 /// <returns>S_OK for success, or failure code</returns>
-HRESULT CDepthWithColorD3D::ProcessColor()
+HRESULT CDepthWithColorD3D::ProcessColor(int nBufferSize)
 {
-    NUI_IMAGE_FRAME imageFrame;
+	HRESULT hr;
+	D3D11_MAPPED_SUBRESOURCE msT;
+	hr = m_pImmediateContext->Map(m_pColorTexture2D, NULL, D3D11_MAP_WRITE_DISCARD, NULL, &msT);
+	if (FAILED(hr)) { return hr; }
 
-    HRESULT hr = m_pNuiSensor->NuiImageStreamGetNextFrame(m_pColorStreamHandle, 0, &imageFrame);
-    if ( FAILED(hr) ) { return hr; }
-  
-    NUI_LOCKED_RECT LockedRect;
-    hr = imageFrame.pFrameTexture->LockRect(0, &LockedRect, NULL, 0);
-    if ( FAILED(hr) ) { return hr; }
-
-    memcpy(m_colorRGBX, LockedRect.pBits, LockedRect.size);
-    m_bColorReceived = true;
-
-    hr = imageFrame.pFrameTexture->UnlockRect(0);
-    if ( FAILED(hr) ) { return hr; };
-
-    hr = m_pNuiSensor->NuiImageStreamReleaseFrame(m_pColorStreamHandle, &imageFrame);
-    
+	memcpy(msT.pData, m_pColorRGBX, nBufferSize);
+	m_pImmediateContext->Unmap(m_pColorTexture2D, NULL);
+	
     return hr;
 }
 
-HRESULT CDepthWithColorD3D::ProcessSkeleton()
+void CDepthWithColorD3D::ProcessFrame(INT64 nTime,
+	const UINT16* pDepthBuffer, int nDepthWidth, int nDepthHeight,
+	const RGBQUAD* pColorBuffer, int nColorWidth, int nColorHeight,
+	const BYTE* pBodyIndexBuffer, int nBodyIndexWidth, int nBodyIndexHeight, Mat&u, Mat&v)
 {
-	NUI_SKELETON_FRAME SkeletonFrame = { 0 };
 
-	HRESULT hr = NuiSkeletonGetNextFrame(0, &SkeletonFrame);
-	NUI_TRANSFORM_SMOOTH_PARAMETERS somewhatLatentParams =
-	{ 0.5f, 0.1f, 0.5f, 0.1f, 0.1f };
-	if (FAILED(hr))
+	//BOOLEAN firstParticle = false;
+	//if (proxyParticle.empty())
+	//{
+	//	firstParticle = true;
+	//}
+
+
+	if (m_pCoordinateMapper && m_pDepthCoordinates && m_pOutputRGBX &&
+		pDepthBuffer && (nDepthWidth == cDepthWidth) && (nDepthHeight == cDepthHeight) &&
+		pColorBuffer && (nColorWidth == cColorWidth) && (nColorHeight == cColorHeight) &&
+		pBodyIndexBuffer && (nBodyIndexWidth == cDepthWidth) && (nBodyIndexHeight == cDepthHeight))
 	{
-		return hr;
-	}
-
-	m_pNuiSensor->NuiTransformSmooth(&SkeletonFrame, &somewhatLatentParams);
-
-	for (int i = 0; i < NUI_SKELETON_COUNT; i++)
-	{
-		if (SkeletonFrame.SkeletonData[i].eTrackingState == NUI_SKELETON_TRACKED &&
-			NUI_SKELETON_POSITION_TRACKED == SkeletonFrame.SkeletonData[i].eSkeletonPositionTrackingState[NUI_SKELETON_POSITION_HEAD] &&
-			NUI_SKELETON_POSITION_TRACKED == SkeletonFrame.SkeletonData[i].eSkeletonPositionTrackingState[NUI_SKELETON_POSITION_SHOULDER_CENTER])
+		HRESULT hr = m_pCoordinateMapper->MapColorFrameToDepthSpace(nDepthWidth * nDepthHeight, (UINT16*)pDepthBuffer, nColorWidth * nColorHeight, m_pDepthCoordinates);
+		if (SUCCEEDED(hr))
 		{
-			m_SkeletonTracked[i] = true;
-			m_HeadPoint[i].x = SkeletonFrame.SkeletonData[i].SkeletonPositions[NUI_SKELETON_POSITION_HEAD].x;
-			m_HeadPoint[i].y = SkeletonFrame.SkeletonData[i].SkeletonPositions[NUI_SKELETON_POSITION_HEAD].y;
-			m_HeadPoint[i].z = SkeletonFrame.SkeletonData[i].SkeletonPositions[NUI_SKELETON_POSITION_HEAD].z;
-			m_NeckPoint[i].x = SkeletonFrame.SkeletonData[i].SkeletonPositions[NUI_SKELETON_POSITION_SHOULDER_CENTER].x;
-			m_NeckPoint[i].y = SkeletonFrame.SkeletonData[i].SkeletonPositions[NUI_SKELETON_POSITION_SHOULDER_CENTER].y;
-			m_NeckPoint[i].z = SkeletonFrame.SkeletonData[i].SkeletonPositions[NUI_SKELETON_POSITION_SHOULDER_CENTER].z;
-		}
-		else
-		{
-			m_HeadPoint[i] = m_NeckPoint[i] = FT_VECTOR3D(0, 0, 0);
-			m_SkeletonTracked[i] = false;
-		}
-	}
-}
 
-HRESULT CDepthWithColorD3D::GetClosestHint(FT_VECTOR3D* pHint3D)
-{
-	int selectedSkeleton = -1;
-	float smallestDistance = 0;
 
-	if (!pHint3D)
-	{
-		return(E_POINTER);
-	}
 
-	if (pHint3D[1].x == 0 && pHint3D[1].y == 0 && pHint3D[1].z == 0)
-	{
-		// Get the skeleton closest to the camera
-		for (int i = 0; i < NUI_SKELETON_COUNT; i++)
-		{
-			if (m_SkeletonTracked[i] && (smallestDistance == 0 || m_HeadPoint[i].z < smallestDistance))
+			if (!u.empty() && !v.empty())
 			{
-				smallestDistance = m_HeadPoint[i].z;
-				selectedSkeleton = i;
+				vector<Particle>::iterator it = proxyParticle.begin();
+				vector<PxRigidActor*>::iterator itact = proxyParticleActor.begin();
+
+				for (int i = 0; i < boxes.size(); i++)
+				{
+					((PxRigidDynamic*)boxes[i])->wakeUp();
+				}
+
+				for (; it != proxyParticle.end();)
+				{
+
+						int x_small = (*it).x / 3.0f;
+						int y_small = (*it).y / 3.0f;
+
+						if (x_small >= 0 && x_small < 640 && y_small >= 0 && y_small < 360)
+						{
+							const float* ptr_u = u.ptr<float>(y_small);
+							const float* ptr_v = v.ptr<float>(y_small);
+							float dx = ptr_u[x_small];
+							float dy = ptr_v[x_small];
+							(*it).x += 3 * dx;
+							(*it).y += 3 * dy;
+
+
+							int x = (*it).x;
+							int y = (*it).y;
+
+							float x_r = -2.0f + 4.0f* (*it).x / (float)cColorWidth;
+							float y_r = 2.0f * (-(*it).y / (float)cColorHeight) + 1.0f;
+
+							x_r *= 10.0f;
+							y_r *= 10.0f;
+
+							int index = y*nColorWidth + x;
+							if (x < 0 || x >= 1920 || y < 0 || y >= 1080)
+							{
+								it = proxyParticle.erase(it);
+								(*itact)->release();
+								itact = proxyParticleActor.erase(itact);
+							}
+							else
+							{
+								DepthSpacePoint p = m_pDepthCoordinates[index];
+
+								//	 Values that are negative infinity means it is an invalid color to depth mapping so we
+								//	 skip processing for this pixel
+								if (p.X != -std::numeric_limits<float>::infinity() && p.Y != -std::numeric_limits<float>::infinity())
+								{
+									int depthX = static_cast<int>(p.X + 0.5f);
+									int depthY = static_cast<int>(p.Y + 0.5f);
+
+									if ((depthX >= 0 && depthX < nDepthWidth) && (depthY >= 0 && depthY < nDepthHeight))
+									{
+										//if the position is valid update the depth of the particle.
+										BYTE player = pBodyIndexBuffer[depthX + (depthY * cDepthWidth)];
+										UINT16 depth = pDepthBuffer[depthX + depthY*cDepthWidth];
+
+										if (player != 0xff && depth > 500 && depth < 2000)
+										{
+											float depthM = (float)(depth - 500) / 50.0;
+											(*it).Depth = depthM;
+
+											PxTransform transform_update(PxVec3(x_r, y_r, depthM), PxQuat::createIdentity());
+											((PxRigidDynamic*)(*itact))->setKinematicTarget(transform_update);
+											++it;
+											++itact;
+
+											circle(referenceFrame, Point(x, y), 20, Scalar(255), -1);
+
+										}
+										else
+										{
+											it = proxyParticle.erase(it);
+											(*itact)->release();
+											itact = proxyParticleActor.erase(itact);
+										}
+
+									}
+									else
+									{
+										it = proxyParticle.erase(it);
+										(*itact)->release();
+										itact = proxyParticleActor.erase(itact);
+									}
+
+								}
+								else
+								{
+									it = proxyParticle.erase(it);
+									(*itact)->release();
+									itact = proxyParticleActor.erase(itact);
+								}
+							}
+					}
+				}
+
+			}
+
+			// loop over output pixels
+			for (int colorIndex = 0; colorIndex < (nColorWidth*nColorHeight); ++colorIndex)
+			{
+				// default setting source to copy from the background pixel
+				const RGBQUAD* pSrc = m_pBackgroundRGBX + colorIndex;
+
+				DepthSpacePoint p = m_pDepthCoordinates[colorIndex];
+
+				// Values that are negative infinity means it is an invalid color to depth mapping so we
+				// skip processing for this pixel
+				if (p.X != -std::numeric_limits<float>::infinity() && p.Y != -std::numeric_limits<float>::infinity())
+				{
+					int depthX = static_cast<int>(p.X + 0.5f);
+					int depthY = static_cast<int>(p.Y + 0.5f);
+
+					if ((depthX >= 0 && depthX < nDepthWidth) && (depthY >= 0 && depthY < nDepthHeight))
+					{
+						BYTE player = pBodyIndexBuffer[depthX + (depthY * cDepthWidth)];
+						UINT16 depth = pDepthBuffer[depthX + depthY*cDepthWidth];
+
+						// if we're tracking a player for the current pixel, draw from the color camera
+						if (player != 0xff )
+						{
+							// set source for copy to the color pixels
+							pSrc = m_pColorRGBX + colorIndex;
+							int x = colorIndex % cColorWidth;
+							int y = colorIndex / cColorWidth;
+							if (x % 5 == 0 && y % 5 == 0)
+							{
+								if (referenceFrame.at<UCHAR>(y,x) == 0)
+								{
+									float depthM = (float)(depth-500)/50.0 ;
+									Particle newParticle = { x, y, depthM };
+
+		
+
+									float x_r = -2.0f + 4.0f*x / (float)cColorWidth;
+									float y_r = 2.0f * (-y / (float)cColorHeight) + 1.0f;
+
+									x_r *= 10.0f;
+									y_r *= 10.0f;
+
+									PxOverlapBuffer hit;
+									//PxGeometry overlapshape = PxSphereGeometry(0.5f);
+									PxTransform shapePose = PxTransform(PxVec3(x_r, y_r, depthM));
+									PxQueryFilterData fd;
+									fd.flags |= PxQueryFlag::eANY_HIT;
+																	
+									bool status = gScene->overlap(PxSphereGeometry(0.5f), shapePose, hit, fd);
+									if (!status)
+									{
+										proxyParticle.push_back(newParticle);
+										PxRigidDynamic* newParticleActor = CreateSphere(PxVec3(x_r, y_r, depthM), 0.5f, 1.0f);
+										newParticleActor->setRigidDynamicFlag(PxRigidDynamicFlag::eKINEMATIC, true);
+										proxyParticleActor.push_back(newParticleActor);
+									}
+								}
+							}
+							
+						}
+					}
+				}
+
+				// write output
+				m_pOutputRGBX[colorIndex] = *pSrc;
 			}
 		}
 	}
-	else
-	{   // Get the skeleton closest to the previous position
-		for (int i = 0; i < NUI_SKELETON_COUNT; i++)
-		{
-			if (m_SkeletonTracked[i])
-			{
-				float d = abs(m_HeadPoint[i].x - pHint3D[1].x) +
-					abs(m_HeadPoint[i].y - pHint3D[1].y) +
-					abs(m_HeadPoint[i].z - pHint3D[1].z);
-				if (smallestDistance == 0 || d < smallestDistance)
-				{
-					smallestDistance = d;
-					selectedSkeleton = i;
-				}
-			}
-		}
-	}
-	if (selectedSkeleton == -1)
-	{
-		return E_FAIL;
-	}
-
-	pHint3D[0] = m_NeckPoint[selectedSkeleton];
-	pHint3D[1] = m_HeadPoint[selectedSkeleton];
-
-	return S_OK;
 }
 
-
-/// <summary>
-/// Process color data received from Kinect
-/// </summary>
-/// <returns>S_OK for success, or failure code</returns>
-HRESULT CDepthWithColorD3D::MapColorToDepth()
+BOOLEAN CDepthWithColorD3D::ProcessFaces(IMultiSourceFrame* pMultiFrame)
 {
-    HRESULT hr;
-
-    // Get of x, y coordinates for color in depth space
-    // This will allow us to later compensate for the differences in location, angle, etc between the depth and color cameras
-    m_pNuiSensor->NuiImageGetColorPixelCoordinateFrameFromDepthPixelFrameAtResolution(
-        cColorResolution,
-        cDepthResolution,
-        m_depthWidth*m_depthHeight,
-        m_depthD16,
-        m_depthWidth*m_depthHeight*2,
-        m_colorCoordinates
-        );
-
-    // copy to our d3d 11 color texture
-    D3D11_MAPPED_SUBRESOURCE msT;
-    hr = m_pImmediateContext->Map(m_pColorTexture2D, NULL, D3D11_MAP_WRITE_DISCARD, NULL, &msT);
-    if ( FAILED(hr) ) { return hr; }
-    
-    // loop over each row and column of the color
-    for (LONG y = 0; y < m_colorHeight; ++y)
-    {
-        LONG* pDest = (LONG*)((BYTE*)msT.pData + msT.RowPitch * y);
-        for (LONG x = 0; x < m_colorWidth; ++x)
-        {
-            // calculate index into depth array
-            int depthIndex = x/m_colorToDepthDivisor + y/m_colorToDepthDivisor * m_depthWidth;
-
-            // retrieve the depth to color mapping for the current depth pixel
-            LONG colorInDepthX = m_colorCoordinates[depthIndex * 2];
-            LONG colorInDepthY = m_colorCoordinates[depthIndex * 2 + 1];
-
-            // make sure the depth pixel maps to a valid point in color space
-            if ( colorInDepthX >= 0 && colorInDepthX < m_colorWidth && colorInDepthY >= 0 && colorInDepthY < m_colorHeight )
-            {
-                // calculate index into color array
-                LONG colorIndex = colorInDepthX + colorInDepthY * m_colorWidth;
-
-                // set source for copy to the color pixel
-                LONG* pSrc = (LONG *)m_colorRGBX + colorIndex;
-                *pDest = *pSrc;
-            }
-            else
-            {
-                *pDest = 0;
-            }
-
-            pDest++;
-        }
-    }
-
-    m_pImmediateContext->Unmap(m_pColorTexture2D, NULL);
-
-    return hr;
-}
-
-void CDepthWithColorD3D::RenderParticle()
-{
-	for (int x = 0; x < m_depthWidth; x += 15)
+	HRESULT hr;
+	IBody* ppBodies[BODY_COUNT] = { 0 };
+	bool bHaveBodyData = SUCCEEDED(UpdateBodyData(ppBodies,pMultiFrame));
+	bool bOneFaceTraked = false;
+	// iterate through each face reader
+	for (int iFace = 0; iFace < BODY_COUNT; ++iFace)
 	{
-		for (int y = 0; y < m_depthHeight; y+=15)
+		// retrieve the latest face frame from this reader
+		IFaceFrame* pFaceFrame = nullptr;
+		hr = m_pFaceFrameReaders[iFace]->AcquireLatestFrame(&pFaceFrame);
+
+		BOOLEAN bFaceTracked = false;
+		if (SUCCEEDED(hr) && nullptr != pFaceFrame)
 		{
-			int depthIndex = x + y * m_depthWidth;
-			if ((m_depthD16[depthIndex] & 7) > 0)
+			// check if a valid face is tracked in this face frame
+			hr = pFaceFrame->get_IsTrackingIdValid(&bFaceTracked);
+			if (bFaceTracked)
 			{
-				float depth = (float)m_depthD16[depthIndex] / 8000.0f;
-				if (depth > 0.8)
-				{
-					XMMATRIX mat = XMMatrixTranslation( -1 + 2* (float)x / (float)m_depthWidth,
-						2*(-(float)y / (float)m_depthHeight)+1,
-						depth);
-					g_Sphere->Draw(mat, m_camera.View, m_projection, Colors::Red);
-				}
+				bOneFaceTraked = true;
 			}
 			
+		}
 
+		if (SUCCEEDED(hr))
+		{
+			if (bFaceTracked)
+			{
+				hr = pFaceFrame->get_FaceFrameResult(&pFaceFrameResult);
+			}
+			else
+			{
+				// face tracking is not valid - attempt to fix the issue
+				// a valid body is required to perform this step
+				if (bHaveBodyData)
+				{
+					// check if the corresponding body is tracked 
+					// if this is true then update the face frame source to track this body
+					IBody* pBody = ppBodies[iFace];
+					if (pBody != nullptr)
+					{
+						BOOLEAN bTracked = false;
+						hr = pBody->get_IsTracked(&bTracked);
+
+						UINT64 bodyTId;
+						if (SUCCEEDED(hr) && bTracked)
+						{
+							// get the tracking ID of this body
+							hr = pBody->get_TrackingId(&bodyTId);
+							if (SUCCEEDED(hr))
+							{
+								// update the face frame source with the tracking ID
+								m_pFaceFrameSources[iFace]->put_TrackingId(bodyTId);
+							}
+						}
+					}
+				}
+			}
+		}
+
+		SafeRelease(pFaceFrame);
+	}
+
+	if (bHaveBodyData)
+	{
+		for (int i = 0; i < _countof(ppBodies); ++i)
+		{
+			SafeRelease(ppBodies[i]);
 		}
 	}
+	return bOneFaceTraked;
+}
+
+
+PxRigidDynamic* CDepthWithColorD3D::CreateSphere(const PxVec3& pos, const PxReal radius, const PxReal density)
+{
+	PxTransform transform(pos, PxQuat::createIdentity());
+	PxSphereGeometry geometry(radius);
+
+	PxMaterial* mMaterial = gPhysicsSDK->createMaterial(0.5, 0.5, 0.5);
+
+	PxRigidDynamic* actor = PxCreateDynamic(*gPhysicsSDK, transform, geometry, *mMaterial, density);
+	
+	if (!actor)
+		cerr << "create actor failed" << endl;
+	actor->setAngularDamping(0.75);
+	actor->setLinearVelocity(PxVec3(0, 0, 0));
+	gScene->addActor(*actor);
+	return actor;
 }
 
 /// <summary>
@@ -1112,67 +1056,323 @@ void CDepthWithColorD3D::RenderParticle()
 /// <returns>S_OK for success, or failure code</returns>
 HRESULT CDepthWithColorD3D::Render()
 {
+
+	float ClearColor[4] = { 0.0f, 0.0f, 0.5f, 1.0f };
+	bool gotColor = false;
+	bool gotFace = false;
     if (m_bPaused)
     {
         return S_OK;
     }
 
-    bool needToMapColorToDepth = false;
-	bool gotHint = false;
-
-    if ( WAIT_OBJECT_0 == WaitForSingleObject(m_hNextDepthFrameEvent, 0) )
-    {
-        // if we have received any valid new depth data we may need to draw
-        if ( SUCCEEDED(ProcessDepth()) )
-        {
-            needToMapColorToDepth = true;
-        }
-    }
-
-    if ( WAIT_OBJECT_0 == WaitForSingleObject(m_hNextColorFrameEvent, 0) )
-    {
-        // if we have received any valid new color data we may need to draw
-        if ( SUCCEEDED(ProcessColor()) )
-        {
-            needToMapColorToDepth = true;
-        }
-    }
-	if (WAIT_OBJECT_0 == WaitForSingleObject(m_hNextSkeletonEvent, 0))
+	if (m_hWnd)
 	{
-		if (SUCCEEDED(ProcessSkeleton()))
+		double fps = 0.0;
+
+		LARGE_INTEGER qpcNow = { 0 };
+		if (m_fFreq)
 		{
-			gotHint = true;
+			if (QueryPerformanceCounter(&qpcNow))
+			{
+				if (m_nLastCounter)
+				{
+					m_nFramesSinceUpdate++;
+					fps = m_fFreq * m_nFramesSinceUpdate / double(qpcNow.QuadPart - m_nLastCounter);
+					if (fps > 10)
+						myTimestep = 1.0 / fps;
+					else
+						myTimestep = 1.0 / 10.0;
+				
+
+				}
+			}
 		}
+			m_nLastCounter = qpcNow.QuadPart;
+			m_nFramesSinceUpdate = 0;
+		
 	}
-
-
-    // If we have not yet received any data for either color or depth since we started up, we shouldn't draw
-    if (!m_bDepthReceived || !m_bColorReceived)
-    {
-        needToMapColorToDepth = false;
-    }
-	float ClearColor[4] = { 0.0f, 0.0f, 0.5f, 1.0f };
-	float notColor[4] = { 0.0f, 0.5f, 0.0f, 1.0f };
-
-    if (needToMapColorToDepth & gotHint)
-    {
-        MapColorToDepth();
-		CheckCameraInput();
-    }
-
 
 	
 
-    // Clear the back buffer
+#pragma region KinectRead
+	if (!m_pMultiSourceFrameReader)
+	{
+		return E_FAIL;
+	}
+	IMultiSourceFrame* pMultiSourceFrame = NULL;
+	IDepthFrame* pDepthFrame = NULL;
+	IColorFrame* pColorFrame = NULL;
+	IBodyIndexFrame* pBodyIndexFrame = NULL;
+
+	HRESULT hr = m_pMultiSourceFrameReader->AcquireLatestFrame(&pMultiSourceFrame);
+
+	if (SUCCEEDED(hr))
+	{
+		IDepthFrameReference* pDepthFrameReference = NULL;
+
+		hr = pMultiSourceFrame->get_DepthFrameReference(&pDepthFrameReference);
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrameReference->AcquireFrame(&pDepthFrame);
+		}
+
+		SafeRelease(pDepthFrameReference);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		IColorFrameReference* pColorFrameReference = NULL;
+
+		hr = pMultiSourceFrame->get_ColorFrameReference(&pColorFrameReference);
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrameReference->AcquireFrame(&pColorFrame);
+		}
+
+		SafeRelease(pColorFrameReference);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		IBodyIndexFrameReference* pBodyIndexFrameReference = NULL;
+
+		hr = pMultiSourceFrame->get_BodyIndexFrameReference(&pBodyIndexFrameReference);
+		if (SUCCEEDED(hr))
+		{
+			hr = pBodyIndexFrameReference->AcquireFrame(&pBodyIndexFrame);
+		}
+
+		SafeRelease(pBodyIndexFrameReference);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+
+		INT64 nDepthTime = 0;
+
+
+		IFrameDescription* pDepthFrameDescription = NULL;
+		int nDepthWidth = 0;
+		int nDepthHeight = 0;
+		UINT nDepthBufferSize = 0;
+		UINT16 *pDepthBuffer = NULL;
+
+		IFrameDescription* pColorFrameDescription = NULL;
+		int nColorWidth = 0;
+		int nColorHeight = 0;
+		ColorImageFormat imageFormat = ColorImageFormat_None;
+		UINT nColorBufferSize = 0;
+		RGBQUAD *pColorBuffer = NULL;
+
+		IFrameDescription* pBodyIndexFrameDescription = NULL;
+		int nBodyIndexWidth = 0;
+		int nBodyIndexHeight = 0;
+		UINT nBodyIndexBufferSize = 0;
+		BYTE *pBodyIndexBuffer = NULL;
+
+
+		hr = pDepthFrame->get_RelativeTime(&nDepthTime);
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrame->get_FrameDescription(&pDepthFrameDescription);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrameDescription->get_Width(&nDepthWidth);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrameDescription->get_Height(&nDepthHeight);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+
+			hr = pDepthFrame->AccessUnderlyingBuffer(&nDepthBufferSize, &pDepthBuffer);
+		}
+
+		// get color frame data
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrame->get_FrameDescription(&pColorFrameDescription);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrameDescription->get_Width(&nColorWidth);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrameDescription->get_Height(&nColorHeight);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrame->get_RawColorImageFormat(&imageFormat);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			if (imageFormat == ColorImageFormat_Bgra)
+			{
+				hr = pColorFrame->AccessRawUnderlyingBuffer(&nColorBufferSize, reinterpret_cast<BYTE**>(&pColorBuffer));
+			}
+			else if (m_pColorRGBX)
+			{
+				pColorBuffer = m_pColorRGBX;
+				nColorBufferSize = cColorWidth * cColorHeight * sizeof(RGBQUAD);
+				hr = pColorFrame->CopyConvertedFrameDataToArray(nColorBufferSize, reinterpret_cast<BYTE*>(pColorBuffer), ColorImageFormat_Bgra);
+			}
+			else
+			{
+				hr = E_FAIL;
+			}
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			ProcessColor(nColorBufferSize);
+			//gotFace = ProcessFaces(pMultiSourceFrame);
+		}
+
+		// get body index frame data
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pBodyIndexFrame->get_FrameDescription(&pBodyIndexFrameDescription);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pBodyIndexFrameDescription->get_Width(&nBodyIndexWidth);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pBodyIndexFrameDescription->get_Height(&nBodyIndexHeight);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+
+			hr = pBodyIndexFrame->AccessUnderlyingBuffer(&nBodyIndexBufferSize, &pBodyIndexBuffer);
+
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			ProcessFrame(nDepthTime, pDepthBuffer, nDepthWidth, nDepthHeight,
+				pColorBuffer, nColorWidth, nColorHeight,
+				pBodyIndexBuffer, nBodyIndexWidth, nBodyIndexHeight, Last_u, Last_v);
+		}
+
+
+		SafeRelease(pDepthFrameDescription);
+		SafeRelease(pColorFrameDescription);
+		SafeRelease(pBodyIndexFrameDescription);
+	}
+
+	SafeRelease(pDepthFrame);
+	SafeRelease(pColorFrame);
+	SafeRelease(pBodyIndexFrame);
+	SafeRelease(pMultiSourceFrame);
+#pragma endregion
+	
+	////Particle flow computations
+	if (SUCCEEDED(hr))
+	{
+		referenceFrame = Mat::zeros(1080, 1920, CV_8UC1);
+		Mat m_colorMat(cColorHeight, cColorWidth, CV_8UC4, reinterpret_cast<void*>(m_pOutputRGBX));
+		Mat m_color_small, m_color_float, frame1Gray;
+		resize(m_colorMat, m_color_small, Size(640, 360));
+		m_color_small.convertTo(m_color_float, CV_32F, 1.0 / 255.0);
+
+		cvtColor(m_color_float, frame1Gray, COLOR_BGR2GRAY);
+
+		if (!LastGrayFrame.empty())
+		{
+
+			//imshow("Last Gray Frame", LastGrayFrame);
+			//imshow("Next Gray Frame", frame1Gray);
+			GpuMat d_frame0(LastGrayFrame);
+			GpuMat d_frame1(frame1Gray);
+
+			BroxOpticalFlow d_flow(0.197, 50.0, 0.75, 1, 14, 10);
+
+			GpuMat d_fu, d_fv;
+
+			d_flow(d_frame0, d_frame1, d_fu, d_fv);
+
+			Mat flowFieldForward = m_color_small.clone();
+			getFlowField(Mat(d_fu), Mat(d_fv), flowFieldForward);
+
+			Last_u = Mat(d_fu).clone();
+			Last_v = Mat(d_fv).clone();
+
+
+			//UpdateParticle(Mat(d_fu), Mat(d_fv));
+			//if (gotFace)
+			//{
+
+			//	RectI faceBox = { 0 };
+			//	PointF facePoints[FacePointType::FacePointType_Count];
+			//	_Vector4 faceRotation;
+			//	DetectionResult faceProperties[FaceProperty::FaceProperty_Count];
+
+			//	if (pFaceFrameResult != nullptr)
+			//	{
+			//		hr = pFaceFrameResult->get_FaceBoundingBoxInColorSpace(&faceBox);
+
+			//		if (SUCCEEDED(hr))
+			//		{
+			//			hr = pFaceFrameResult->GetFacePointsInColorSpace(FacePointType::FacePointType_Count, facePoints);
+			//		}
+
+			//		if (SUCCEEDED(hr))
+			//		{
+			//			hr = pFaceFrameResult->get_FaceRotationQuaternion(&faceRotation);
+			//		}
+
+			//		if (SUCCEEDED(hr))
+			//		{
+			//			hr = pFaceFrameResult->GetFaceProperties(FaceProperty::FaceProperty_Count, faceProperties);
+			//		}
+			//		if (SUCCEEDED(hr))
+			//		{
+			//			rectangle(flowFieldForward, Point(faceBox.Left / 3, faceBox.Top / 3),
+			//				Point(faceBox.Right / 3, faceBox.Bottom / 3),CV_RGB(255,0,0));
+			//			for (int i = 0; i < FacePointType::FacePointType_Count; i++)
+			//			{
+			//				circle(flowFieldForward, Point(facePoints[i].X / 3, facePoints[i].Y / 3), 2, CV_RGB(255, 0, 0));
+			//			}
+			//		}
+			//	}
+			//}
+			imshow("flowfield", flowFieldForward);
+
+
+		}
+		LastGrayFrame = frame1Gray.clone();
+		//imshow("reference", referenceFrame);
+	}
+	if (gScene && SUCCEEDED(hr))
+	{
+		StepPhysX();
+	}
+
+	// Clear the back buffer
 	m_pImmediateContext->OMSetRenderTargets(1, &m_pRenderTargetView, m_pDepthStencilView);
-	if (m_bDepthReceived)
     m_pImmediateContext->ClearRenderTargetView(m_pRenderTargetView, ClearColor);
-	else if (!m_bDepthReceived)
-		m_pImmediateContext->ClearRenderTargetView(m_pRenderTargetView, notColor);
 
     // Clear the depth buffer to 1.0 (max depth)
     m_pImmediateContext->ClearDepthStencilView(m_pDepthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
-	
+
+
 	D3D11_VIEWPORT vp;
 	vp.Width = static_cast<FLOAT>(m_windowResX );
 	vp.Height = static_cast<FLOAT>(m_windowResY);
@@ -1185,176 +1385,434 @@ HRESULT CDepthWithColorD3D::Render()
 
     // Update the view matrix
     m_camera.Update();
-    
- //   // Update variables that change once per frame
- //   CBChangesEveryFrame cb;
- //   cb.View = XMMatrixTranspose(m_camera.View);
- //   cb.Projection = XMMatrixTranspose(m_projection);
- //   cb.XYScale = XMFLOAT4(m_xyScale, -m_xyScale, 0.f, 0.f); 
-	//cb.Rectangle = XMFLOAT4(ftRect[0], ftRect[1], ftRect[2], ftRect[3]);
- //   m_pImmediateContext->UpdateSubresource(m_pCBChangesEveryFrame, 0, NULL, &cb, 0, 0);
-
- //   // Set up shaders
- //   m_pImmediateContext->VSSetShader(m_pVertexShader, NULL, 0);
-
- //   //m_pImmediateContext->GSSetShader(m_pGeometryShader, NULL, 0);
- //   //m_pImmediateContext->GSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
- //   //m_pImmediateContext->GSSetShaderResources(0, 1, &m_pDepthTextureRV);
- //   //m_pImmediateContext->GSSetShaderResources(1, 1, &m_pColorTextureRV);
- //   //m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
-
- //   m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
 
 	g_BatchEffect->SetView(m_camera.View);
 	g_BatchEffect->SetProjection(m_projection);
-	g_BatchEffect->SetTexture(m_pColorTextureRV);
+	//g_BatchEffect->SetTexture(m_pColorTextureRV);
 	g_BatchEffect->Apply(m_pImmediateContext);
 	m_pImmediateContext->IASetInputLayout(m_pVertexLayout);
 
-	//g_Batch->Begin();
-	//VertexPositionColorTexture v1(Vector3(-1.0f, 1.0f, 0.f), Colors::White, Vector2(0.0f, 0.0f));
-	//VertexPositionColorTexture v2(Vector3(1.0f, 1.0f, 0.f), Colors::White, Vector2(1.0f, 0.0f));
-	//VertexPositionColorTexture v3(Vector3(1.0f, -1.0f, 0.f), Colors::White, Vector2(1.0f, 1.0f));
-	//VertexPositionColorTexture v4(Vector3(-1.0f, -1.0f, 0.0f), Colors::White, Vector2(0.0f, 1.0f));
-	//g_Batch->DrawQuad(v1, v2, v3, v4);
-	//g_Batch->End();
+	/*g_Batch->Begin();
+	VertexPositionColorTexture v1(Vector3(-1.6f, 0.9f, 0.0f), Colors::White, Vector2(0.0f, 0.0f));
+	VertexPositionColorTexture v2(Vector3(1.6f, 0.9f, 0.0f), Colors::White, Vector2(1.0f, 0.0f));
+	VertexPositionColorTexture v3(Vector3(1.6f, -0.9f, 0.0f), Colors::White, Vector2(1.0f, 1.0f));
+	VertexPositionColorTexture v4(Vector3(-1.6f, -0.9f, 0.0f), Colors::White, Vector2(0.0f, 1.0f));
+	g_Batch->DrawQuad(v1, v2, v3, v4);
+	g_Batch->End();*/
 
-	if (m_bDepthReceived)
-	RenderParticle();
+
+	const XMVECTORF32 xaxis = { 20.0f, 0.f, 0.f };
+	const XMVECTORF32 yaxis = { 0.f, 0.f, 20.f };
+	DrawGrid(*g_Batch, xaxis, yaxis, g_XMZero, 20, 20, Colors::Gray);
+
+	RenderActors();
+
+	//if (!proxyParticle.empty())
+	//RenderParticle();
     // Present our back buffer to our front buffer
     m_pSwapChain->Present(0, 0);
 
+	return hr;
 
-
-	//m_pImmediateContext->OMSetRenderTargets(1, &m_pRenderTargetView_user, m_pDepthStencilView);
-	//m_pImmediateContext->ClearRenderTargetView(m_pRenderTargetView_user, ClearColor);
-
-	//// Clear the depth buffer to 1.0 (max depth)
-	//m_pImmediateContext->ClearDepthStencilView(m_pDepthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
-
-	//vp.Width = static_cast<FLOAT>(m_windowResX/2);
-	//vp.Height = static_cast<FLOAT>(m_windowResY);
-	//vp.MinDepth = 0.0f;
-	//vp.MaxDepth = 1.0f;
-	//vp.TopLeftX = 0;
-	//vp.TopLeftY = 0;
-	//m_pImmediateContext->RSSetViewports(1, &vp);
-
-
-	//XMVECTOR m_eye = XMVectorSet(faceTranslation[0]-0.1,faceTranslation[1],faceTranslation[2]-0.1, 0.0f);
-	//XMVECTOR m_at = XMVectorSet(0.f, 0.f, -1.5f, 0.f);
- //   XMVECTOR m_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-	//XMMATRIX user_view = XMMatrixLookAtLH(m_eye, m_at, m_up);
-
-	//// Update variables that change once per frame
-	////CBChangesEveryFrame cb;
-	//cb.View = XMMatrixTranspose(user_view);
-	////cb.Projection = XMMatrixTranspose(m_projection);
-	////cb.XYScale = XMFLOAT4(m_xyScale, -m_xyScale, 0.f, 0.f);
-	////cb.Rectangle = XMFLOAT4(ftRect[0], ftRect[1], ftRect[2], ftRect[3]);
-	//m_pImmediateContext->UpdateSubresource(m_pCBChangesEveryFrame, 0, NULL, &cb, 0, 0);
-
-	//// Set up shaders
-	//m_pImmediateContext->VSSetShader(m_pVertexShader, NULL, 0);
-
-	//m_pImmediateContext->GSSetShader(m_pGeometryShader, NULL, 0);
-	//m_pImmediateContext->GSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
-	//m_pImmediateContext->GSSetShaderResources(0, 1, &m_pDepthTextureRV);
-	//m_pImmediateContext->GSSetShaderResources(1, 1, &m_pColorTextureRV);
-	//m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
-
-	//m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
-
-	//// Draw the scene
-	//m_pImmediateContext->Draw(m_depthWidth * m_depthHeight, 0);
-
-
-	//vp.Width = static_cast<FLOAT>(m_windowResX / 2);
-	//vp.Height = static_cast<FLOAT>(m_windowResY);
-	//vp.MinDepth = 0.0f;
-	//vp.MaxDepth = 1.0f;
-	//vp.TopLeftX = m_windowResX / 2;
-	//vp.TopLeftY = 0;
-	//m_pImmediateContext->RSSetViewports(1, &vp);
-
-	//m_eye = XMVectorSet(faceTranslation[0]+0.1, faceTranslation[1], faceTranslation[2] - 0.1, 0.0f);
-	//m_at = XMVectorSet(0.f, 0.f, -1.5f, 0.f);
-	//m_up = XMVectorSet(0.f, 1.f, 0.f, 0.f);
-	//user_view = XMMatrixLookAtLH(m_eye, m_at, m_up);
-
-	//// Update variables that change once per frame
-	////CBChangesEveryFrame cb;
-	//cb.View = XMMatrixTranspose(user_view);
-	////cb.Projection = XMMatrixTranspose(m_projection);
-	////cb.XYScale = XMFLOAT4(m_xyScale, -m_xyScale, 0.f, 0.f);
-	////cb.Rectangle = XMFLOAT4(ftRect[0], ftRect[1], ftRect[2], ftRect[3]);
-	//m_pImmediateContext->UpdateSubresource(m_pCBChangesEveryFrame, 0, NULL, &cb, 0, 0);
-
-	//// Set up shaders
-	//m_pImmediateContext->VSSetShader(m_pVertexShader, NULL, 0);
-
-	//m_pImmediateContext->GSSetShader(m_pGeometryShader, NULL, 0);
-	//m_pImmediateContext->GSSetConstantBuffers(0, 1, &m_pCBChangesEveryFrame);
-	//m_pImmediateContext->GSSetShaderResources(0, 1, &m_pDepthTextureRV);
-	//m_pImmediateContext->GSSetShaderResources(1, 1, &m_pColorTextureRV);
-	//m_pImmediateContext->GSSetSamplers(0, 1, &m_pColorSampler);
-
-	//m_pImmediateContext->PSSetShader(m_pPixelShader, NULL, 0);
-
-	//// Draw the scene
-	//m_pImmediateContext->Draw(m_depthWidth * m_depthHeight, 0);
-
-
-	//// Present our back buffer to our front buffer
-	//return m_pSwapChain_user->Present(0, 0);
 }
 
-// Get a video image and process it.
-bool CDepthWithColorD3D::CheckCameraInput()
+template <typename T> inline T clamp(T x, T a, T b)
 {
-	HRESULT hrFT = E_FAIL;
+	return ((x) > (a) ? ((x) < (b) ? (x) : (b)) : (a));
+}
 
-	if (m_bColorReceived && m_bDepthReceived)
-		// Do face tracking
+template <typename T> inline T mapValue(T x, T a, T b, T c, T d)
+{
+	x = clamp(x, a, b);
+	return c + (d - c) * (x - a) / (b - a);
+}
+
+void CDepthWithColorD3D::getFlowField(const Mat& u, const Mat& v, Mat& flowField)
+{
+	float maxDisplacement = -1.0f;
+
+	for (int i = 0; i < u.rows; i+=10)
 	{
-		FT_SENSOR_DATA sensorData;
-		sensorData.pDepthFrame = m_depthImage;
-		sensorData.pVideoFrame = m_colorImage;
-		sensorData.ViewOffset = { 0, 0 };
-		sensorData.ZoomFactor = 1.0f;
+		const float* ptr_u = u.ptr<float>(i);
+		const float* ptr_v = v.ptr<float>(i);
 
-		FT_VECTOR3D* hint = NULL;
-		if (SUCCEEDED(GetClosestHint(m_hint3D)))
+		for (int j = 0; j < u.cols; j+=10)
 		{
-			hint = m_hint3D;
-		}
-		if (m_LastTrackSucceeded)
-		{
-			hrFT = m_pFaceTracker->ContinueTracking(&sensorData, hint, m_pFTResult);
-		}
-		else
-		{
-			hrFT = m_pFaceTracker->StartTracking(&sensorData, NULL, hint, m_pFTResult);
+			float d = sqrt(ptr_u[j] * ptr_u[j] + ptr_v[j] * ptr_v[j]); //max(fabsf(ptr_u[j]), fabsf(ptr_v[j]));
+
+			if (d > maxDisplacement)
+				maxDisplacement = d;
 		}
 	}
+
+	//flowField = Mat::zeros(u.size(), CV_8UC3);
+
+
+	for (int i = 0; i < flowField.rows; i+=10)
+	{
+		const float* ptr_u = u.ptr<float>(i);
+		const float* ptr_v = v.ptr<float>(i);
+
+		//Vec4b* row = flowField.ptr<Vec4b>(i);
+
+		for (int j = 0; j < flowField.cols; j+=10)
+		{
+			//row[j][0] = 0;
+			//row[j][1] = static_cast<unsigned char> (mapValue(-ptr_v[j], -maxDisplacement, maxDisplacement, 0.0f, 255.0f));
+			//row[j][2] = static_cast<unsigned char> (mapValue(ptr_u[j], -maxDisplacement, maxDisplacement, 0.0f, 255.0f));
+			//row[j][3] = 255;
+
+
+			Point p = Point(j, i);
+			float l = sqrt(ptr_u[j] * ptr_u[j] + ptr_v[j] * ptr_v[j]);
+			float l_max = maxDisplacement;
+
+			float dx = ptr_u[j];
+			float dy = ptr_v[j];
+			if (l > 0 && flowField.at<Vec4b>(i,j) != Vec4b(255,0,0))
+			{
+				double spinSize = 5.0 * l / l_max;  // Factor to normalise the size of the spin depeding on the length of the arrow
+
+				Point p2 = Point(p.x + (int)(dx), p.y + (int)(dy));
+				line(flowField, p, p2, CV_RGB(0,255,0), 1);
+
+				double angle;               // Draws the spin of the arrow
+				angle = atan2((double)p.y - p2.y, (double)p.x - p2.x);
+
+				p.x = (int)(p2.x + spinSize * cos(angle + 3.1416 / 4));
+				p.y = (int)(p2.y + spinSize * sin(angle + 3.1416 / 4));
+				line(flowField, p, p2, CV_RGB(0, 255, 0), 1);
+
+				p.x = (int)(p2.x + spinSize * cos(angle - 3.1416 / 4));
+				p.y = (int)(p2.y + spinSize * sin(angle - 3.1416 / 4));
+				line(flowField, p, p2, CV_RGB(0, 255, 0), 1);
+
+			}
+		}
+	}
+		
+}
+
+void CDepthWithColorD3D::UpdateParticle(Mat&u, Mat&v)
+{
+	if (proxyParticle.empty())
+	{
+		return;
+	}
+
+	for (int i = 0; i < boxes.size(); i++)
+	{
+		((PxRigidDynamic*)boxes[i])->wakeUp();
+	}
+
+	for (int i = 0; i < proxyParticle.size(); i++)
+	{
+		int x = proxyParticle[i].x/3.0f;
+		int y = proxyParticle[i].y/3.0f;
+
+		if (x >=  0 && x < 640 && y >= 0 && y < 360)
+		{
+			const float* ptr_u = u.ptr<float>(y);
+			const float* ptr_v = v.ptr<float>(y);
+			float dx = ptr_u[x];
+			float dy = ptr_v[x];
+			proxyParticle[i].x += 3*dx;
+			proxyParticle[i].y += 3*dy;
+
+
+			float x_r = -2.0f + 4.0f*proxyParticle[i].x / (float)cColorWidth;
+			float y_r = 2.0f * (-proxyParticle[i].y / (float)cColorHeight) + 1.0f;
+
+			x_r *= 10.0f;
+			y_r *= 10.0f;
+
+			PxTransform transform = proxyParticleActor[i]->getGlobalPose();
+			PxVec3 pos = transform.p;
+			PxTransform transform_update(PxVec3(x_r, y_r, pos.z), PxQuat::createIdentity());
+			((PxRigidDynamic*) proxyParticleActor[i])->setKinematicTarget(transform_update);
+
+			//PxOverlapBuffer hit;
+			//PxGeometry overlapshape = PxSphereGeometry(0.5f);
+			//PxTransform shapePose = PxTransform(PxVec3(x_r, y_r, pos.z));
+			//PxQueryFilterData fd;
+			//fd.flags |= PxQueryFlag::eANY_HIT;
+			//
+			//
+			//gScene->overlap(overlapshape, shapePose, hit,fd);
+
+
+
+		}
+
+		circle(referenceFrame, Point(proxyParticle[i].x, proxyParticle[i].y),20, Scalar(255),-1 );
+		
+
+	}
+	//imshow("reference", referenceFrame);
+}
+
+HRESULT CDepthWithColorD3D::UpdateBodyData(IBody** ppBodies, IMultiSourceFrame* pMultiFrame)
+{
+	HRESULT hr = E_FAIL;
+
+	if (pMultiFrame != nullptr)
+	{
+		IBodyFrame* pBodyFrame = nullptr;
+		IBodyFrameReference* pBodyFrameReference = nullptr;
+		hr = pMultiFrame->get_BodyFrameReference(&pBodyFrameReference);
+		if (SUCCEEDED(hr))
+		{
+			hr = pBodyFrameReference->AcquireFrame(&pBodyFrame);
+			if (SUCCEEDED(hr))
+			{
+				hr = pBodyFrame->GetAndRefreshBodyData(BODY_COUNT, ppBodies);
+			}
+		}
+
+		SafeRelease(pBodyFrame);
+	}
+
+	return hr;
+}
+
+void CDepthWithColorD3D::InitializePhysX() 
+{
+
+	gFoundation = PxCreateFoundation(PX_PHYSICS_VERSION, gDefaultAllocatorCallback, gDefaultErrorCallback);
+
+	gPhysicsSDK = PxCreatePhysics(PX_PHYSICS_VERSION, *gFoundation, PxTolerancesScale());
+	if (gPhysicsSDK == NULL) {
+		cerr << "Error creating PhysX3 device." << endl;
+		cerr << "Exiting..." << endl;
+		exit(1);
+	}
+
+	if (!PxInitExtensions(*gPhysicsSDK))
+		cerr << "PxInitExtensions failed!" << endl;
+
+	if (gPhysicsSDK->getPvdConnectionManager() == NULL)
+		return;
+	const char* pvd_host_ip = "127.0.0.1";
+	int port = 5425;
+	unsigned int timeout = 100;
 	
+	
+	//--- Debugger
+	PxVisualDebuggerConnectionFlags connectionFlags = PxVisualDebuggerExt::getAllConnectionFlags();
+	theConnection = PxVisualDebuggerExt::createConnection(gPhysicsSDK->getPvdConnectionManager(),
+		pvd_host_ip, port, timeout, connectionFlags);
 
-	m_LastTrackSucceeded = SUCCEEDED(hrFT) && SUCCEEDED(m_pFTResult->GetStatus());
-	if (m_LastTrackSucceeded)
-	{
-		RECT Test;
-		FLOAT pScale, pRotation[3];
-			m_pFTResult->Get3DPose(&pScale,pRotation,faceTranslation);
-		m_pFTResult->GetFaceRect(&Test);
-		ftRect[0] = (float)(Test.left / 640.0f);
-		ftRect[1] = (float)(Test.right / 640.0f);
-		ftRect[2] = (float)(Test.top / 480.0f);
-		ftRect[3] = (float)(Test.bottom/ 480.0f);
+
+	//Create the scene
+	PxSceneDesc sceneDesc(gPhysicsSDK->getTolerancesScale());
+	sceneDesc.gravity = PxVec3(0.0f, -9.8f, 0.0f);
+	sceneDesc.flags |= PxSceneFlag::eENABLE_CCD;
+
+	if (!sceneDesc.cpuDispatcher) {
+		PxDefaultCpuDispatcher* mCpuDispatcher = PxDefaultCpuDispatcherCreate(1);
+		if (!mCpuDispatcher)
+			cerr << "PxDefaultCpuDispatcherCreate failed!" << endl;
+		sceneDesc.cpuDispatcher = mCpuDispatcher;
 	}
-	else
+	if (!sceneDesc.filterShader)
+		sceneDesc.filterShader = gDefaultFilterShader;
+
+
+	gScene = gPhysicsSDK->createScene(sceneDesc);
+	if (!gScene)
+		cerr << "createScene failed!" << endl;
+
+	gScene->setVisualizationParameter(PxVisualizationParameter::eSCALE, 1.0);
+	gScene->setVisualizationParameter(PxVisualizationParameter::eCOLLISION_SHAPES, 1.0f);
+
+
+	PxMaterial* mMaterial = gPhysicsSDK->createMaterial(0.5, 0.5, 0.5);
+
+	//Create actors 
+	//1) Create ground plane
+	PxReal d = 0.0f;
+	PxTransform pose = PxTransform(PxVec3(0.0f, 0, 0.0f), PxQuat(PxHalfPi, PxVec3(0.0f, 0.0f, 1.0f)));
+
+	PxRigidStatic* plane = gPhysicsSDK->createRigidStatic(pose);
+	if (!plane)
+		cerr << "create plane failed!" << endl;
+
+	PxShape* shape = plane->createShape(PxPlaneGeometry(), *mMaterial);
+	if (!shape)
+		cerr << "create shape failed!" << endl;
+	gScene->addActor(*plane);
+
+
+	//2)           Create cube	 
+	PxReal         density = 1.0f;
+	PxTransform    transform(PxVec3(0.0f, 10.0f, 0.0f), PxQuat::createIdentity());
+	PxVec3         dimensions(1.0f, 1.0f, 1.0f);
+	PxBoxGeometry  geometry(dimensions);
+
+	for (int i = 0; i < 10; i++)
 	{
-		m_pFTResult->Reset();
+		transform.p = PxVec3(0.0f, 5.0f + 5 * i, 3.0f);
+		PxRigidDynamic *actor = PxCreateDynamic(*gPhysicsSDK, transform, geometry, *mMaterial, density);
+
+		actor->setAngularDamping(0.75);
+		actor->setLinearVelocity(PxVec3(0, 0, 0));
+		if (!actor)
+			cerr << "create actor failed!" << endl;
+		gScene->addActor(*actor);
+		boxes.push_back(actor);
 	}
-	SetCenterOfImage(m_pFTResult);
-	return m_LastTrackSucceeded;
+
+
+}
+
+void CDepthWithColorD3D::DrawGrid(PrimitiveBatch<VertexPositionColorTexture>& batch, FXMVECTOR xAxis, FXMVECTOR yAxis, FXMVECTOR origin, size_t xdivs, size_t ydivs, GXMVECTOR color)
+{
+	g_BatchEffect->Apply(m_pImmediateContext);
+
+	m_pImmediateContext->IASetInputLayout(m_pVertexLayout);
+
+	g_Batch->Begin();
+
+	xdivs = std::max<size_t>(1, xdivs);
+	ydivs = std::max<size_t>(1, ydivs);
+
+	for (size_t i = 0; i <= xdivs; ++i)
+	{
+		float fPercent = float(i) / float(xdivs);
+		fPercent = (fPercent * 2.0f) - 1.0f;
+		XMVECTOR vScale = XMVectorScale(xAxis, fPercent);
+		vScale = XMVectorAdd(vScale, origin);
+
+		VertexPositionColorTexture v1(XMVectorSubtract(vScale, yAxis), color,Vector2(0,0));
+		VertexPositionColorTexture v2(XMVectorAdd(vScale, yAxis), color, Vector2(0, 0));
+		batch.DrawLine(v1, v2);
+	}
+
+	for (size_t i = 0; i <= ydivs; i++)
+	{
+		FLOAT fPercent = float(i) / float(ydivs);
+		fPercent = (fPercent * 2.0f) - 1.0f;
+		XMVECTOR vScale = XMVectorScale(yAxis, fPercent);
+		vScale = XMVectorAdd(vScale, origin);
+
+		VertexPositionColorTexture v1(XMVectorSubtract(vScale, xAxis), color, Vector2(0, 0));
+		VertexPositionColorTexture v2(XMVectorAdd(vScale, xAxis), color, Vector2(0, 0));
+		batch.DrawLine(v1, v2);
+	}
+
+	g_Batch->End();
+}
+
+void CDepthWithColorD3D::StepPhysX()
+{
+	gScene->simulate(myTimestep);
+
+	while (!gScene->fetchResults())
+	{
+
+	}
+}
+
+void CDepthWithColorD3D::ShutdownPhysX() {
+
+	if (gScene != NULL)
+	{
+		for (int i = 0; i < boxes.size(); i++)
+			gScene->removeActor(*boxes[i]);
+
+		gScene->release();
+
+		for (int i = 0; i < boxes.size(); i++)
+			boxes[i]->release();
+	}
+	if (gPhysicsSDK != NULL)
+		gPhysicsSDK->release();
+
+	//if (theConnection!=NULL)
+	//	theConnection->release();
+}
+
+XMMATRIX CDepthWithColorD3D::PxtoXMMatrix(PxTransform input)
+{
+	PxMat33 quat = PxMat33(input.q);
+	XMFLOAT4X4 start;
+	XMMATRIX mat;
+	start._11 = quat.column0[0];
+	start._12 = quat.column0[1];
+	start._13 = quat.column0[2];
+	start._14 = 0;
+
+
+	start._21 = quat.column1[0];
+	start._22 = quat.column1[1];
+	start._23 = quat.column1[2];
+	start._24 = 0;
+
+	start._31 = quat.column2[0];
+	start._32 = quat.column2[1];
+	start._33 = quat.column2[2];
+	start._34 = 0;
+
+	start._41 = input.p.x;
+	start._42 = input.p.y;
+	start._43 = input.p.z;
+	start._44 = 1;
+
+	mat = XMLoadFloat4x4(&start);
+	return mat;
+}
+
+void CDepthWithColorD3D::DrawBox(PxShape* pShape, PxRigidActor* actor)
+{
+	PxTransform pT = PxShapeExt::getGlobalPose(*pShape, *actor);
+	PxBoxGeometry bg;
+	pShape->getBoxGeometry(bg);
+	XMMATRIX mat = PxtoXMMatrix(pT);
+	g_Box->Draw(mat, m_camera.View, m_projection, Colors::Gray);
+}
+
+void CDepthWithColorD3D::DrawSphere(PxShape* pShape, PxRigidActor* actor)
+{
+	PxTransform pT = PxShapeExt::getGlobalPose(*pShape, *actor);
+	PxSphereGeometry bg;
+	pShape->getSphereGeometry(bg);
+	XMMATRIX mat = PxtoXMMatrix(pT);
+	g_Sphere->Draw(mat, m_camera.View, m_projection, Colors::Red);
+}
+
+void CDepthWithColorD3D::DrawShape(PxShape* shape, PxRigidActor* actor)
+{
+	PxGeometryType::Enum type = shape->getGeometryType();
+	switch (type)
+	{
+	case PxGeometryType::eBOX:
+		DrawBox(shape, actor);
+		break;
+	case PxGeometryType::eSPHERE:
+		DrawSphere(shape, actor);
+		break;
+	}
+}
+
+void CDepthWithColorD3D::DrawActor(PxRigidActor* actor)
+{
+	PxU32 nShapes = actor->getNbShapes();
+	PxShape** shapes = new PxShape*[nShapes];
+
+	actor->getShapes(shapes, nShapes);
+	while (nShapes--)
+	{
+		DrawShape(shapes[nShapes], actor);
+	}
+	delete[] shapes;
+}
+
+void CDepthWithColorD3D::RenderActors()
+{
+
+	for (int i = 0; i < boxes.size(); i++)
+		DrawActor(boxes[i]);
+
+	for (int i = 0; i < proxyParticleActor.size(); i++)
+		DrawActor(proxyParticleActor[i]);
 }

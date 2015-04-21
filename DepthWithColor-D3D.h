@@ -8,6 +8,9 @@
 
 #include "resource.h"
 #include <iostream>
+#include <iomanip>
+#include <string>
+#include <ctype.h>
 #include <windowsx.h>
 #include <algorithm>
 
@@ -27,19 +30,41 @@
 #include <SimpleMath.h>
 
 // Kinect Library
-#include "NuiApi.h"
+#include <Kinect.h>
+#include <Kinect.Face.h>
 
 // Utilities Library
 #include "Camera.h"
 #include "DX11Utils.h"
-#include <FaceTrackLib.h>
+//#include <FaceTrackLib.h>
+
+//OpenCV Library
+#include "opencv2/core/core.hpp"
+#include "opencv2/highgui/highgui.hpp"
+#include "opencv2/gpu/gpu.hpp"
+
+//-- Physx Library
+#include <PxPhysicsAPI.h>
+#include <PxExtensionsAPI.h>
+#include <PxDefaultErrorCallback.h>
+#include <PxDefaultAllocator.h>
+#include <PxDefaultSimulationFilterShader.h>
+#include <PxDefaultCpuDispatcher.h>
+#include <PxShapeExt.h>
+#include <PxMat33.h>
+#include <PxSimpleFactory.h>
+#include <vector>
+#include <PxVisualDebuggerExt.h>
 
 /// <summary>
 /// Constant buffer for shader
 /// </summary>
 using namespace std;
+using namespace cv;
+using namespace cv::gpu;
 using namespace DirectX;
 using namespace DirectX::SimpleMath;
+using namespace physx;
 
 struct CBChangesEveryFrame
 {
@@ -49,61 +74,73 @@ struct CBChangesEveryFrame
 	DirectX::XMFLOAT4 Rectangle;
 };
 
+struct Particle
+{
+	float x;
+	float y;
+	float Depth;
+};
+
 class CDepthWithColorD3D
 {
-	static const int                    cBytesPerPixel = 4;
-
-	static const NUI_IMAGE_RESOLUTION   cDepthResolution = NUI_IMAGE_RESOLUTION_640x480;
-	static const NUI_IMAGE_RESOLUTION   cColorResolution = NUI_IMAGE_RESOLUTION_640x480;
-	
+	static const int        cDepthWidth = 512;
+	static const int        cDepthHeight = 424;
+	static const int        cColorWidth = 1920;
+	static const int        cColorHeight = 1080;
 
 public:
-	/// <summary>
-	/// Constructor
-	/// </summary>
+
 	CDepthWithColorD3D();
 
-	/// <summary>
-	/// Denstructor
-	/// </summary>
 	~CDepthWithColorD3D();
 
-	/// <summary>
-	/// Register class and create window
-	/// </summary>
-	/// <returns>S_OK for success, or failure code</returns>
-	HRESULT                             InitWindow(HINSTANCE hInstance, int nCmdShow);
-
-	/// <summary>
-	/// Create Direct3D device and swap chain
-	/// </summary>
-	/// <returns>S_OK for success, or failure code</returns>
-	HRESULT                             InitDevice();
-
-	/// <summary>
-	/// Create the first connected Kinect found 
-	/// </summary>
-	/// <returns>S_OK on success, otherwise failure code</returns>
 	HRESULT                             CreateFirstConnected();
-
-	/// <summary>
-	/// Renders a frame
-	/// </summary>
-	/// <returns>S_OK for success, or failure code</returns>
+	HRESULT                             InitDevice();
+	HRESULT                             InitWindow(HINSTANCE hInstance, int nCmdShow);
 	HRESULT                             Render();
+	HRESULT                             InitOpenCV();
+	LRESULT                             HandleMessages(HWND  hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
-	/// <summary>
-	/// Handles window messages, used to process input
-	/// </summary>
-	/// <param name="hWnd">window message is for</param>
-	/// <param name="uMsg">message</param>
-	/// <param name="wParam">message data</param>
-	/// <param name="lParam">additional message data</param>
-	/// <returns>result of message processing</returns>
-	LRESULT HandleMessages(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+	PxVisualDebuggerConnection* theConnection;
+
+	//--------------------------------------------------------------------------------------
+	//Physx
+	//--------------------------------------------------------------------------------------
+	static PxPhysics*                gPhysicsSDK;
+	static PxDefaultErrorCallback    gDefaultErrorCallback;
+	static PxDefaultAllocator        gDefaultAllocatorCallback;
+	static PxSimulationFilterShader  gDefaultFilterShader;
+	static PxFoundation*             gFoundation;
+
+	//PHYSX                 Function
+	void                    InitializePhysX();
+	void                    ShutdownPhysX();
+	void                    StepPhysX();
+	//PxRigidDynamic*         CreateSphere(const PxVec3& pos, const PxReal radius, const PxReal density);
+
+protected:
+
+	PxDistanceJoint*      gMouseJoint = NULL;
+	PxReal                gMouseDepth = 0.0f;
+	PxReal                myTimestep = 1.0/10.0;
+	PxRigidDynamic*       gMouseSphere = NULL;
+	PxRigidDynamic*       gSelectedActor = NULL;
+	PxScene*              gScene = NULL;
+	vector<PxRigidActor*> boxes;
+	vector<PxRigidActor*> proxyParticleActor;
 
 private:
-	// 3d camera
+
+
+	INT64                   m_nStartTime;
+	INT64                   m_nLastCounter;
+	double                  m_fFreq;
+	INT64                   m_nNextStatusTime;
+	DWORD                   m_nFramesSinceUpdate;
+
+	Mat	LastGrayFrame;
+
+	//                                  3d camera
 	CCamera                             m_camera;
 
 	HINSTANCE                           m_hInst;
@@ -114,23 +151,22 @@ private:
 	ID3D11DeviceContext*                m_pImmediateContext;
 	IDXGISwapChain*                     m_pSwapChain;
 	IDXGISwapChain*						m_pSwapChain_user;
-	
+
 	ID3D11RenderTargetView*             m_pRenderTargetView;
 	ID3D11RenderTargetView*				m_pRenderTargetView_user;
-	
 
-	std::unique_ptr<BasicEffect>                         g_BatchEffect;
-	std::unique_ptr<GeometricPrimitive>                  g_Box;
-	std::unique_ptr<GeometricPrimitive>                  g_Sphere;
+	std::unique_ptr<BasicEffect>                                g_BatchEffect;
+	std::unique_ptr<GeometricPrimitive>                         g_Box;
+	std::unique_ptr<GeometricPrimitive>                         g_Sphere;
 	std::unique_ptr<PrimitiveBatch<VertexPositionColorTexture>> g_Batch;
 
+	std::vector<Particle>				 proxyParticle;
 
 	ID3D11Texture2D*                    m_pDepthStencil;
 	ID3D11DepthStencilView*             m_pDepthStencilView;
 	ID3D11InputLayout*                  m_pVertexLayout;
 	ID3D11Buffer*                       m_pVertexBuffer;
 	ID3D11Buffer*                       m_pCBChangesEveryFrame;
-
 
 	DirectX::XMMATRIX                   m_projection;
 
@@ -152,15 +188,12 @@ private:
 	int                                 m_windowResX;
 	int                                 m_windowResY;
 
-	// Kinect
-	INuiSensor*                         m_pNuiSensor;
-	HANDLE                              m_hNextDepthFrameEvent;
-	HANDLE                              m_pDepthStreamHandle;
-	HANDLE                              m_hNextColorFrameEvent;
-	HANDLE                              m_pColorStreamHandle;
-	HANDLE								m_pSkeletonStreamhandle;
-	HANDLE								m_hNextSkeletonEvent;
+	//                                  Kinect
+	IKinectSensor*	                    m_pKinectSensor;
+	ICoordinateMapper*                  m_pCoordinateMapper;
+	DepthSpacePoint*                    m_pDepthCoordinates;
 
+	IMultiSourceFrameReader* m_pMultiSourceFrameReader;
 
 	// for passing depth data as a texture
 	ID3D11Texture2D*                    m_pDepthTexture2D;
@@ -170,12 +203,18 @@ private:
 	ID3D11Texture2D*                    m_pColorTexture2D;
 	ID3D11ShaderResourceView*           m_pColorTextureRV;
 
-
 	ID3D11SamplerState*                 m_pColorSampler;
 
-	// for mapping depth to color
-	USHORT*                             m_depthD16;
-	BYTE*                               m_colorRGBX;
+	// for                              mapping depth to color
+	UINT16*                             m_depthD16;
+	RGBQUAD*                            m_pColorRGBX;
+	RGBQUAD*                            m_pOutputRGBX;
+	RGBQUAD*                            m_pBackgroundRGBX;
+	BYTE*					            m_pBodyIndex;
+
+	Mat					   referenceFrame;
+	Mat					   Last_u, Last_v;
+
 	LONG*                               m_colorCoordinates;
 
 	// to prevent drawing until we have data for both streams
@@ -187,60 +226,59 @@ private:
 	// if the application is paused, for example in the minimized case
 	bool                                m_bPaused;
 
-	//Face Tracker 
-	IFTFaceTracker*						m_pFaceTracker;
-	IFTResult*							m_pFTResult;
-	float								m_XCenterFace;
-	float								m_YCenterFace;
-	bool								m_LastTrackSucceeded;
-	IFTImage*							m_colorImage;
-	IFTImage*							m_depthImage;
+	// Color reader
+	IColorFrameReader*     m_pColorFrameReader;
 
-	/// <summary>
-	/// Toggles between near and default mode
-	/// Does nothing on a non-Kinect for Windows device
-	/// </summary>
-	/// <returns>S_OK for success, or failure code</returns>
-	HRESULT                             ToggleNearMode();
+	//                     Body reader
+	IBodyFrameReader*      m_pBodyFrameReader;
 
-	/// <summary>
-	/// Process depth data received from Kinect
-	/// </summary>
-	/// <returns>S_OK for success, or failure code</returns>
-	HRESULT                             ProcessDepth();
+	//                     Face sources
+	IFaceFrameSource*	   m_pFaceFrameSources[BODY_COUNT];
 
-	/// <summary>
-	/// Process color data received from Kinect
-	/// </summary>
-	/// <returns>S_OK for success, or failure code</returns>
-	HRESULT                             ProcessColor();
+	//                     Face readers
+	IFaceFrameReader*	   m_pFaceFrameReaders[BODY_COUNT];
 
-	/// <summary>
-	/// Adjust color to the same space as depth
-	/// </summary>
-	/// <returns>S_OK on success, otherwise failure code</returns>
-	HRESULT                             MapColorToDepth();
+	IFaceFrameResult*      pFaceFrameResult;
 
-	/// <summary>
-	/// Compile and set layout for shaders
-	/// </summary>
-	/// <returns>S_OK for success, or failure code</returns>
-	HRESULT                             LoadShaders();
+	HRESULT                ProcessColor(int nBufferSize);
 
-	void	                            RenderParticle();
+	void	               RenderParticle();
+
+	void	               UpdateParticle(Mat& u, Mat& v);
+
+	void                   getFlowField(const Mat& u, const Mat& v, Mat& flowField);
+
+	void                   ProcessFrame(INT64 nTime,
+		const UINT16* pDepthBuffer, int nDepthHeight, int nDepthWidth,
+		const RGBQUAD* pColorBuffer, int nColorWidth, int nColorHeight,
+		const BYTE* pBodyIndexBuffer, int nBodyIndexWidth, int nBodyIndexHeight, Mat& u, Mat& v);
+
+	BOOLEAN ProcessFaces(IMultiSourceFrame* pMultiFrame);
+
+	HRESULT UpdateBodyData(IBody** ppBodies, IMultiSourceFrame* pMultiFrame);
+
+	void DrawGrid(PrimitiveBatch<VertexPositionColorTexture>& batch, FXMVECTOR xAxis, FXMVECTOR yAxis,
+		FXMVECTOR origin, size_t xdivs, size_t ydivs, GXMVECTOR color);
+
+	XMMATRIX PxtoXMMatrix(PxTransform input);
+	void DrawBox(PxShape* pShape, PxRigidActor* actor);
+	void DrawSphere(PxShape* pShape, PxRigidActor* actor);
+	void DrawShape(PxShape* shape, PxRigidActor* actor);
+	void DrawActor(PxRigidActor* actor);
+	void RenderActors();
+	PxRigidDynamic* CreateSphere(const PxVec3& pos, const PxReal radius, const PxReal density);
+
 	
-	void								SetCenterOfImage(IFTResult*);
 
-	bool								CheckCameraInput();
-
-	HRESULT								ProcessSkeleton();
-
-	FT_VECTOR3D                         m_NeckPoint[NUI_SKELETON_COUNT];
-	FT_VECTOR3D                         m_HeadPoint[NUI_SKELETON_COUNT];
-	bool                                m_SkeletonTracked[NUI_SKELETON_COUNT];
-	HRESULT                             GetClosestHint(FT_VECTOR3D* pHint3D);
-	FT_VECTOR3D	                        m_hint3D[2];
-	float                               faceTranslation[3];
-
-	float                               ftRect[4];
 };
+
+// Safe release for interfaces
+template<class Interface>
+inline void SafeRelease(Interface *& pInterfaceToRelease)
+{
+	if (pInterfaceToRelease != NULL)
+	{
+		pInterfaceToRelease->Release();
+		pInterfaceToRelease = NULL;
+	}
+}
